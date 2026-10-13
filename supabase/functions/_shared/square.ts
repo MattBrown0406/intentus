@@ -57,7 +57,10 @@ export async function resolveCheckoutLink(c: SquareConfig, binding: CheckoutBind
   };
   if (await orderPaid()) return { pending: true };
   if (!binding.payment_link_id) throw new Error('Legacy checkout link id missing');
-  await request(`/online-checkout/payment-links/${encodeURIComponent(binding.payment_link_id)}`, undefined, 'DELETE');
+  // 404 = already deleted (a concurrent call, or an earlier attempt that failed
+  // before saving the replacement); treating it as fatal would block checkout forever.
+  await request(`/online-checkout/payment-links/${encodeURIComponent(binding.payment_link_id)}`, undefined, 'DELETE')
+    .catch((error) => { if (!/\(404\)/.test(String(error?.message))) throw error; });
   // A payment that landed between the check and the delete keeps its order.
   if (await orderPaid()) return { pending: true };
   return await create(`${binding.id}:redirect-v1`);

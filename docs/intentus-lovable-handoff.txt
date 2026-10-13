@@ -11,3 +11,6 @@ Verify get_coach_sharing and set_coach_sharing as actual authenticated users; ve
 Deploy the frontend only after the RPC migration is verified. Check /sample without login, /auth?mode=signup, the dashboard next-action/guide/progress panels and /sharing load/save/error behavior. A missing or failed RPC must show unknown access, not private/saved success. Native bundles require a separately approved native build; GitHub source synchronization is not a native release.
 
 No SQL Editor action or production deployment is authorized by this handoff file.
+
+--- October 2026 audit addendum (HOLD; not authorization to deploy) ---
+New migration supabase/migrations/20261012120000_audit_fixes.sql must be applied AFTER the 20260905/06 migrations and BEFORE redeploying Edge Functions. Follow the "Deployment order" section in docs/audit-status.md. Do not use the SQL Editor; apply through the normal migration workflow. After applying, verify as real authenticated users: audit lifecycle guard (cannot insert a second audit or set status archived), coach-assets upload requires coach tier, admin can deactivate a profile, register_push_token, coach_accept_invite branded path requires a matching coach_branding slug, strategic_reports owner cannot be changed by a coach. Regenerate types.ts.

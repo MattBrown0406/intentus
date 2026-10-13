@@ -10,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { brandLogo as logo } from "@/lib/brand";
-import { getTierCapability, normalizePlanTier, type PlanTier } from "@/lib/tier-policy";
+import { getTierCapability, normalizePlanTier, tierCovers, type PlanTier } from "@/lib/tier-policy";
 import { functionErrorMessage } from "@/lib/function-errors";
 import {
   withRevenueCatIdentity,
@@ -166,9 +166,10 @@ const Subscribe = () => {
     setActionProductId(plan.productId);
     try {
       await withRevenueCatIdentity(user.id, () => Purchases.purchasePackage({ aPackage: selectedPackage }));
-      const newTier = await waitForVerifiedPlanTier(user.id, plan.tier, { isCurrent: () => account.current === user.id });
+      // The store has charged by now; a failed verification read must not say "Purchase failed".
+      const newTier = await waitForVerifiedPlanTier(user.id, plan.tier, { isCurrent: () => account.current === user.id }).catch(() => null);
       if (account.current !== user.id) return;
-      if (newTier === plan.tier) {
+      if (newTier && tierCovers(newTier, plan.tier)) {
         setCurrentTier(newTier);
         toast({ title: "Subscription active", description: `${getTierCapability(newTier).label} is now active.` });
         navigate("/dashboard");

@@ -1,7 +1,7 @@
 import { Capacitor } from "@capacitor/core";
 import { Purchases, LOG_LEVEL, type CustomerInfo } from "@revenuecat/purchases-capacitor";
 import { supabase } from "@/integrations/supabase/client";
-import type { PlanTier } from "@/lib/tier-policy";
+import { tierCovers, type PlanTier } from "@/lib/tier-policy";
 
 export const REVENUECAT_PRODUCT_IDS = {
   exec: "intentus_executive_monthly",
@@ -105,7 +105,10 @@ export async function readVerifiedPlanTier(userId: string): Promise<Exclude<Plan
 
 // The store/Square confirms payment before its webhook updates profiles.plan_tier,
 // so a single read right after checkout almost always sees the old tier. Poll the
-// server-verified tier briefly until it reaches the purchased tier.
+// server-verified tier briefly until it reaches the purchased tier. profiles.plan_tier
+// is the highest of every grant (store, Square, coach-assigned), so a tier at or
+// above the target (e.g. a coach-assigned Premium client buying Executive, or a
+// store downgrade that only applies at renewal) is already as verified as it gets.
 export async function waitForVerifiedPlanTier(
   userId: string,
   target: Exclude<PlanTier, "free">,
@@ -120,7 +123,7 @@ export async function waitForVerifiedPlanTier(
     try {
       tier = await readVerifiedPlanTier(userId);
       read = true;
-      if (tier === target) return tier;
+      if (tier && tierCovers(tier, target)) return tier;
     } catch (error) {
       lastError = error; // transient read failure: keep waiting for the webhook
     }

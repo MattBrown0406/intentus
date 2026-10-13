@@ -487,7 +487,8 @@ GRANT EXECUTE ON FUNCTION public.rc_apply_event(text, uuid, text, text, text, te
 --     sources for the configured app (and store/environment when present) to
 --     the single Intentus target, deactivates them on the sources, and
 --     recomputes everyone. Non-UUID ids (anonymous RC ids) are skipped; with
---     no single Intentus target the sources are only revoked (RC moved them).
+--     no single Intentus target the sources are only revoked (RC moved them),
+--     except that an anonymous-only destination revokes nothing (see below).
 --     Sources updated after the transfer time are left alone.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.rc_transfer_events (
@@ -535,6 +536,11 @@ BEGIN
  SELECT coalesce(array_agg(DISTINCT p.user_id), '{}') INTO v_from FROM public.profiles p
   WHERE p.user_id IN (SELECT x::uuid FROM unnest(p_from) x WHERE x ~ c_uuid) AND NOT (p.user_id = ANY (v_to));
  IF cardinality(v_to) = 1 THEN v_target := v_to[1]; END IF;
+ -- Anonymous-only destination ($RCAnonymousID: a signed-out device): RevenueCat
+ -- ALIASES that anonymous id with whoever signs in next, with no further event.
+ -- That is almost always the same payer, so revoking here would strand them
+ -- until the next renewal. Only an identified destination revokes the source.
+ IF NOT EXISTS (SELECT 1 FROM unnest(p_to) x WHERE x ~ c_uuid) THEN v_from := '{}'; END IF;
  PERFORM 1 FROM public.profiles WHERE user_id = ANY (v_from || v_to) ORDER BY user_id FOR UPDATE;
  FOR v_row IN
   SELECT * FROM public.rc_entitlement_sources

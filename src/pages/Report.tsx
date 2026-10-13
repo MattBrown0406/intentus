@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppBreadcrumb from "@/components/AppBreadcrumb";
 import { supabase } from "@/integrations/supabase/client";
+import { functionErrorMessage } from "@/lib/function-errors";
 import type { Json } from "@/integrations/supabase/types";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -140,7 +141,7 @@ const Report = () => {
           const { data: fnData, error: fnError } = await supabase.functions.invoke("generate-report", {
             body: { audit_id: audit[0].id },
           });
-          if (fnError) throw fnError;
+          if (fnError) throw new Error(await functionErrorMessage(fnError, "Report generation failed. Please try again."));
 
           // Reload report
           const { data: newReport } = await supabase

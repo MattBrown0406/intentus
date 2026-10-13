@@ -106,3 +106,25 @@ Deno.test("coaching context uses the edited/refreshed plan shapes", () => {
   assertEquals(editedPlanPhases(null), null);
   assertEquals(editedPlanPhases([]), null);
 });
+
+Deno.test("legacy link already deleted at Square (404) is still replaced; other DELETE errors propagate", async () => {
+  const legacy = { id: "b", order_id: "o", checkout_url: "https://square.link/old", payment_link_id: "l", redirect_url: null };
+  const fake = (status: number) => {
+    const saved: Record<string, unknown>[] = [];
+    const request = (path: string, body?: unknown, method?: string) => {
+      if (method === "DELETE") return Promise.reject(new Error(`Square request failed (${status})`));
+      if (path.startsWith("/orders/")) return Promise.resolve({ order: { id: "o", state: "OPEN" } });
+      const key = (body as { idempotency_key: string }).idempotency_key;
+      return Promise.resolve({ payment_link: { id: `link-${key}`, order_id: `order-${key}`, url: `https://square.link/${key}` } });
+    };
+    return { saved, request, save: (u: Record<string, unknown>) => { saved.push(u); return Promise.resolve(); } };
+  };
+  const gone = fake(404);
+  assertEquals(await resolveCheckoutLink(config, legacy, gone.request, gone.save), { url: "https://square.link/b:redirect-v1" });
+  assertEquals(gone.saved.length, 1);
+  const failing = fake(500);
+  let threw = false;
+  try { await resolveCheckoutLink(config, legacy, failing.request, failing.save); } catch { threw = true; }
+  assert(threw);
+  assertEquals(failing.saved, []);
+});

@@ -64,3 +64,10 @@ export function normalizePlanTier(value: unknown): PlanTier {
 export function getTierCapability(value: unknown): TierCapability {
   return TIER_CAPABILITIES[normalizePlanTier(value)];
 }
+
+const TIER_RANK: Record<PlanTier, number> = { free: 0, exec: 1, premium: 2, coach: 3 };
+
+/** The server grants the highest of all sources (store, Square, coach-assigned tier). */
+export function tierCovers(actual: unknown, target: PlanTier): boolean {
+  return TIER_RANK[normalizePlanTier(actual)] >= TIER_RANK[target];
+}

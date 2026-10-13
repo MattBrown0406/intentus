@@ -36,3 +36,26 @@ See `docs/product-improvements.md` for the implemented scope, verification and d
 5. Clear coach collaboration controls: preview exactly what the coach sees, choose what to share, and make feedback/next-contact expectations explicit.
 
 These recommendations are hypotheses to test, not guaranteed retention or conversion gains.
+
+## October 2026 multi-round audit (4 rounds, pushed to main 2026-10-12) — HOLD deployment
+
+Four audit rounds (frontend, auth/coach/native, Edge Functions, SQL/RLS; rounds 2–4 re-reviewed earlier fixes). Rounds 1–3 still found significant bugs; round 4 found 4 (2 were regressions from round 3) and both reviewers then reported no remaining significant bugs.
+
+Highlights: Executive (`exec`) subscribers were treated as free by every AI function; coach dashboard RPCs were unbound (invite links/tier changes always failed); returning users were sent back through onboarding on every login; Report crashed after "Refresh Plan"; pattern intelligence always said "insufficient data"; purchases nearly always showed "awaiting verification"; RevenueCat refunds and TRANSFER events never revoked/moved access; Square coaches could never resubscribe and never returned to the app after checkout; account deletion left the Square subscription billing; free users could write to the public coach-assets bucket; users could delete audit history to dodge the re-audit cooldown; re-audit paywall was client-only; a coach could move one client's report to another client; push tokens leaked across accounts; native deep links replayed on every navigation.
+
+Verified locally: tsc, ESLint (0 errors), 132 vitest tests, Vite build, `npm audit --omit=dev --audit-level=critical`, Deno check + 46 Deno tests, and a full local Postgres replay of all migrations with every SQL suite passing (including the new audit-2026-10-*.sql suites) and an idempotent double-apply of the new migration. Not verified: production database, real RevenueCat/Square/APNs traffic, physical devices.
+
+### Deployment order (Lovable prompts only — no SQL editor)
+1. Reconcile production migration history first (item 1 above; the two `20260412_*` files share version `20260412`).
+2. Apply pending migrations in order, ending with `20261012120000_audit_fixes.sql` (requires the 20260905/06 migrations). Then regenerate `src/integrations/supabase/types.ts`.
+3. Deploy Edge Functions only after step 2: `revenuecat-webhook` (calls `rc_apply_transfer`), `create-square-checkout` (`square_checkouts.redirect_url`, per-subscription bindings), `invite-user`/`process-coach-invite`/`delete-account` all depend on the new schema.
+4. Then publish the frontend. It tolerates the new RPCs being absent (`register_push_token` falls back on PGRST202).
+5. Native: run `npx cap sync ios` (CapApp-SPM Package.swift lacks CapacitorApp/CapacitorPushNotifications), add the Push Notifications capability (aps-environment entitlement), and add a `CFBundleURLTypes` entry for the `intentus` scheme. These were not edited here.
+
+### Open product/ops follow-ups
+- Legacy 'legacy' entitlement grants never expire (seeded by 20260905165846) — needs a reconciliation pass; past coach invites wrote permanent tiers.
+- No scheduled recompute when an entitlement expires without a webhook (consider pg_cron).
+- Square refunds/disputes still 503; failed Square renewal revokes immediately (no grace).
+- Deactivated coaches' clients keep their coach-assigned tier.
+- Clients cannot leave a coach (only the sharing switch); coach-written `ninety_day_plan` edits are hidden when the client has an edited plan.
+- Settings "Manage subscription" always opens Apple — web (Square) coaches have no cancel path in-app.

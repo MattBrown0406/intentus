@@ -1,7 +1,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set search_path=public,extensions;
-select plan(21);
+select plan(24);
 insert into auth.users(id,email) values
  ('a1111111-1111-4111-8111-111111111111','r3-a@example.invalid'),
  ('b2222222-2222-4222-8222-222222222222','r3-b@example.invalid'),
@@ -28,6 +28,10 @@ select is(public.rc_apply_transfer('r3-xfer','r3-app','APP_STORE','PRODUCTION',n
 select is((select plan_tier::text from public.profiles where user_id='b2222222-2222-4222-8222-222222222222'),'premium','transfer target gains the subscription');
 select is((select plan_tier::text from public.profiles where user_id='c3333333-3333-4333-8333-333333333333'),'free','transfer source loses it');
 select is(public.rc_apply_transfer('r3-xfer','r3-app','APP_STORE','PRODUCTION',now()-interval '1 minute',array['c3333333-3333-4333-8333-333333333333','$RCAnonymousID:abc'],array['b2222222-2222-4222-8222-222222222222']),'duplicate','transfer retry idempotent');
+-- Anonymous-only destination (signed-out device): RC aliases it with the next sign-in, so the payer keeps access.
+select is(public.rc_apply_transfer('r3-xfer-anon','r3-app','APP_STORE','PRODUCTION',now(),array['b2222222-2222-4222-8222-222222222222'],array['$RCAnonymousID:def']),'ignored','anonymous-only transfer revokes nothing');
+select is((select plan_tier::text from public.profiles where user_id='b2222222-2222-4222-8222-222222222222'),'premium','payer keeps access after anonymous transfer');
+select is((select active from public.rc_entitlement_sources where user_id='b2222222-2222-4222-8222-222222222222' and product_id='intentus_premium_monthly'),true,'source untouched by anonymous transfer');
 select throws_ok($$select public.rc_apply_transfer('r3-buy','r3-app','APP_STORE','PRODUCTION',now(),array[]::text[],array[]::text[])$$,'22023','event ID collision','transfer id cannot reuse a lifecycle event id');
 select is(public.rc_apply_transfer('r3-xfer-x','other-app',null,null,now(),array[]::text[],array[]::text[]),'unconfigured','unconfigured app denied');
 -- Square: a second binding per user is allowed once the first is bound; two pending are not.
