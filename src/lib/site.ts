@@ -17,7 +17,7 @@ export const organizationJsonLd = {
   "@type": "Organization",
   name: SITE_NAME,
   url: SITE_URL,
-  logo: `${SITE_URL}/favicon.ico`,
+  logo: `${SITE_URL}/favicon.png`,
   description: DEFAULT_DESCRIPTION,
 };
 
@@ -31,7 +31,7 @@ export const softwareJsonLd = {
   description: DEFAULT_DESCRIPTION,
   offers: {
     "@type": "Offer",
-    price: "29",
+    price: "39.99",
     priceCurrency: "USD",
   },
   audience: {

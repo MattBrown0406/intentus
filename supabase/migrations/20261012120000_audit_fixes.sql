@@ -401,3 +401,204 @@ REVOKE ALL ON FUNCTION public.guard_strategic_report_owner() FROM PUBLIC, anon, 
 DROP TRIGGER IF EXISTS guard_strategic_report_owner ON public.strategic_reports;
 CREATE TRIGGER guard_strategic_report_owner BEFORE UPDATE ON public.strategic_reports
  FOR EACH ROW EXECUTE FUNCTION public.guard_strategic_report_owner();
+
+-- ---------------------------------------------------------------------------
+-- 13. RevenueCat refunds revoke access. A refund arrives as CANCELLATION
+--     (cancel_reason CUSTOMER_SUPPORT) whose expiration_at_ms is moved back to
+--     the refund time; RevenueCat documents no EXPIRATION after it. CANCELLATION
+--     was 'ignored', so a refunded subscriber kept the paid tier indefinitely
+--     (nothing recomputes plan_tier when expires_at merely passes). A
+--     CANCELLATION now SHORTENS the source's expiry when it is newer than the
+--     source's last event and its expiration is earlier; an ordinary
+--     unsubscribe carries the unchanged period end and still changes nothing.
+--     Signature, owner and ACL are preserved by CREATE OR REPLACE.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.rc_apply_event(p_event_id text, p_user_id uuid, p_app_id text, p_store text, p_environment text,
+ p_product_id text, p_event_type text, p_event_at timestamptz, p_expires_at timestamptz)
+RETURNS text LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+DECLARE v_source text; v_tier public.plan_tier; v_old public.rc_entitlement_sources%rowtype;
+ v_event public.rc_events%rowtype; v_outcome text := 'applied'; v_grant boolean;
+BEGIN
+ IF current_user <> 'service_role' THEN RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501'; END IF;
+ IF p_event_id IS NULL OR length(p_event_id) NOT BETWEEN 1 AND 200 OR p_user_id IS NULL OR
+    p_event_at IS NULL OR NOT isfinite(p_event_at) OR p_event_at < '2020-01-01'::timestamptz OR p_event_at > clock_timestamp() + interval '5 minutes' THEN
+  RAISE EXCEPTION 'invalid event' USING ERRCODE = '22023'; END IF;
+ IF NOT EXISTS (SELECT 1 FROM public.rc_product_config WHERE app_id = p_app_id AND store = p_store AND environment = p_environment
+                AND product_id = p_product_id AND enabled) THEN
+  RETURN 'unconfigured'; END IF;
+ -- Serialize both same-user changes and event IDs, including cross-user replay.
+ PERFORM pg_advisory_xact_lock(hashtextextended('rc-event:' || p_event_id, 0));
+ SELECT * INTO v_event FROM public.rc_events WHERE event_id = p_event_id;
+ IF FOUND THEN
+  IF (v_event.user_id, v_event.app_id, v_event.store, v_event.environment, v_event.product_id, v_event.event_type, v_event.event_at, v_event.expires_at)
+     IS DISTINCT FROM (p_user_id, p_app_id, p_store, p_environment, p_product_id, p_event_type, p_event_at, p_expires_at) THEN
+   RAISE EXCEPTION 'event ID collision' USING ERRCODE = '22023'; END IF;
+  RETURN 'duplicate'; END IF;
+ PERFORM 1 FROM public.profiles WHERE user_id = p_user_id FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'profile missing' USING ERRCODE = 'P0002'; END IF;
+ v_source := 'revenuecat:' || p_app_id || ':' || p_store || ':' || p_environment;
+ v_tier := CASE p_product_id WHEN 'intentus_executive_monthly' THEN 'exec'::public.plan_tier
+                             WHEN 'intentus_premium_monthly' THEN 'premium'::public.plan_tier ELSE 'coach'::public.plan_tier END;
+ v_grant := p_event_type IN ('INITIAL_PURCHASE', 'RENEWAL', 'UNCANCELLATION', 'SUBSCRIPTION_EXTENDED', 'TEMPORARY_ENTITLEMENT_GRANT');
+ IF v_grant THEN
+  IF p_expires_at IS NULL OR NOT isfinite(p_expires_at) OR p_expires_at <= clock_timestamp() OR p_expires_at <= p_event_at THEN
+   RAISE EXCEPTION 'future expiration required' USING ERRCODE = '22023'; END IF;
+ ELSIF p_event_type = 'EXPIRATION' THEN
+  IF p_expires_at IS NULL OR NOT isfinite(p_expires_at) OR p_expires_at > clock_timestamp() THEN
+   RAISE EXCEPTION 'expiration not reached' USING ERRCODE = '22023'; END IF;
+ ELSIF p_event_type <> 'CANCELLATION' THEN v_outcome := 'ignored';
+ END IF;
+ -- PRODUCT_CHANGE schedules a change: only purchase/renewal establishes paid access.
+ SELECT * INTO v_old FROM public.rc_entitlement_sources WHERE user_id = p_user_id AND source = v_source AND product_id = p_product_id;
+ IF p_event_type = 'CANCELLATION' THEN
+  IF v_old.user_id IS NOT NULL AND v_old.active AND p_expires_at IS NOT NULL AND isfinite(p_expires_at)
+     AND v_old.expires_at IS NOT NULL AND p_expires_at < v_old.expires_at
+     AND (v_old.event_at IS NULL OR p_event_at > v_old.event_at) THEN
+   UPDATE public.rc_entitlement_sources SET expires_at = p_expires_at, event_at = p_event_at, event_id = p_event_id
+    WHERE user_id = p_user_id AND source = v_source AND product_id = p_product_id;
+   PERFORM public.recompute_user_plan(p_user_id);
+  ELSE v_outcome := 'ignored';
+  END IF;
+ ELSIF v_outcome <> 'ignored' THEN
+  IF v_old.event_at IS NOT NULL AND p_event_at <= v_old.event_at THEN v_outcome := 'stale';
+  ELSIF NOT v_grant AND v_old.expires_at IS NOT NULL AND p_expires_at < v_old.expires_at THEN v_outcome := 'stale';
+  ELSE
+   INSERT INTO public.rc_entitlement_sources(user_id, source, product_id, tier, expires_at, event_at, event_id, active)
+   VALUES (p_user_id, v_source, p_product_id, v_tier, p_expires_at, p_event_at, p_event_id, v_grant)
+   ON CONFLICT (user_id, source, product_id) DO UPDATE SET tier = excluded.tier, expires_at = excluded.expires_at,
+    event_at = excluded.event_at, event_id = excluded.event_id, active = excluded.active;
+   PERFORM public.recompute_user_plan(p_user_id);
+  END IF;
+ END IF;
+ INSERT INTO public.rc_events(event_id, user_id, app_id, store, environment, product_id, event_type, event_at, expires_at, outcome)
+ VALUES (p_event_id, p_user_id, p_app_id, p_store, p_environment, p_product_id, p_event_type, p_event_at, p_expires_at, v_outcome);
+ RETURN v_outcome;
+END $$;
+REVOKE ALL ON FUNCTION public.rc_apply_event(text, uuid, text, text, text, text, text, timestamptz, timestamptz) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.rc_apply_event(text, uuid, text, text, text, text, text, timestamptz, timestamptz) TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- 14. RevenueCat TRANSFER (e.g. a second Intentus account restoring the same
+--     Apple ID's purchases). The event has no app_user_id/product_id, so the
+--     webhook rejected it (400) forever: the account the purchase moved AWAY
+--     from kept its paid tier indefinitely (later events go to the new owner,
+--     so no EXPIRATION ever reaches it) and the new owner got nothing until the
+--     next renewal. rc_apply_transfer moves the from-accounts' live RevenueCat
+--     sources for the configured app (and store/environment when present) to
+--     the single Intentus target, deactivates them on the sources, and
+--     recomputes everyone. Non-UUID ids (anonymous RC ids) are skipped; with
+--     no single Intentus target the sources are only revoked (RC moved them).
+--     Sources updated after the transfer time are left alone.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.rc_transfer_events (
+ event_id text PRIMARY KEY CHECK (length(event_id) BETWEEN 1 AND 200),
+ app_id text NOT NULL, store text, environment text,
+ event_at timestamptz NOT NULL,
+ transferred_from text[] NOT NULL, transferred_to text[] NOT NULL,
+ outcome text NOT NULL CHECK (outcome IN ('applied', 'ignored')),
+ received_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.rc_transfer_events ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.rc_transfer_events FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.rc_transfer_events TO service_role;
+
+CREATE OR REPLACE FUNCTION public.rc_apply_transfer(p_event_id text, p_app_id text, p_store text, p_environment text,
+ p_event_at timestamptz, p_from text[], p_to text[])
+RETURNS text LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+DECLARE v_prior public.rc_transfer_events%rowtype; v_sources text[]; v_from uuid[]; v_to uuid[]; v_target uuid;
+ v_row public.rc_entitlement_sources%rowtype; v_moved integer := 0; v_user uuid;
+ c_uuid constant text := '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
+BEGIN
+ IF current_user <> 'service_role' THEN RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501'; END IF;
+ IF p_event_id IS NULL OR length(p_event_id) NOT BETWEEN 1 AND 200 OR p_app_id IS NULL OR
+    p_event_at IS NULL OR NOT isfinite(p_event_at) OR p_event_at < '2020-01-01'::timestamptz OR p_event_at > clock_timestamp() + interval '5 minutes' OR
+    p_from IS NULL OR p_to IS NULL OR cardinality(p_from) > 50 OR cardinality(p_to) > 50 OR
+    (p_store IS NOT NULL AND p_store NOT IN ('APP_STORE', 'PLAY_STORE', 'STRIPE', 'MAC_APP_STORE', 'AMAZON')) OR
+    (p_environment IS NOT NULL AND p_environment NOT IN ('PRODUCTION', 'SANDBOX')) THEN
+  RAISE EXCEPTION 'invalid event' USING ERRCODE = '22023'; END IF;
+ SELECT array_agg(DISTINCT 'revenuecat:' || app_id || ':' || store || ':' || environment) INTO v_sources
+  FROM public.rc_product_config WHERE app_id = p_app_id AND enabled
+   AND (p_store IS NULL OR store = p_store) AND (p_environment IS NULL OR environment = p_environment);
+ IF v_sources IS NULL THEN RETURN 'unconfigured'; END IF;
+ -- Same lock namespace as rc_apply_event: one id is one event across both tables.
+ PERFORM pg_advisory_xact_lock(hashtextextended('rc-event:' || p_event_id, 0));
+ IF EXISTS (SELECT 1 FROM public.rc_events WHERE event_id = p_event_id) THEN
+  RAISE EXCEPTION 'event ID collision' USING ERRCODE = '22023'; END IF;
+ SELECT * INTO v_prior FROM public.rc_transfer_events WHERE event_id = p_event_id;
+ IF FOUND THEN
+  IF (v_prior.app_id, v_prior.store, v_prior.environment, v_prior.event_at, v_prior.transferred_from, v_prior.transferred_to)
+     IS DISTINCT FROM (p_app_id, p_store, p_environment, p_event_at, p_from, p_to) THEN
+   RAISE EXCEPTION 'event ID collision' USING ERRCODE = '22023'; END IF;
+  RETURN 'duplicate'; END IF;
+ SELECT coalesce(array_agg(DISTINCT p.user_id), '{}') INTO v_to FROM public.profiles p
+  WHERE p.user_id IN (SELECT x::uuid FROM unnest(p_to) x WHERE x ~ c_uuid);
+ SELECT coalesce(array_agg(DISTINCT p.user_id), '{}') INTO v_from FROM public.profiles p
+  WHERE p.user_id IN (SELECT x::uuid FROM unnest(p_from) x WHERE x ~ c_uuid) AND NOT (p.user_id = ANY (v_to));
+ IF cardinality(v_to) = 1 THEN v_target := v_to[1]; END IF;
+ PERFORM 1 FROM public.profiles WHERE user_id = ANY (v_from || v_to) ORDER BY user_id FOR UPDATE;
+ FOR v_row IN
+  SELECT * FROM public.rc_entitlement_sources
+   WHERE user_id = ANY (v_from) AND source = ANY (v_sources) AND active
+     AND (event_at IS NULL OR event_at <= p_event_at)
+   ORDER BY user_id, source, product_id
+ LOOP
+  IF v_target IS NOT NULL AND (v_row.expires_at IS NULL OR v_row.expires_at > clock_timestamp()) THEN
+   INSERT INTO public.rc_entitlement_sources AS s(user_id, source, product_id, tier, expires_at, event_at, event_id, active)
+   VALUES (v_target, v_row.source, v_row.product_id, v_row.tier, v_row.expires_at, v_row.event_at, v_row.event_id, true)
+   ON CONFLICT (user_id, source, product_id) DO UPDATE SET tier = excluded.tier, expires_at = excluded.expires_at,
+    event_at = excluded.event_at, event_id = excluded.event_id, active = true
+    WHERE NOT s.active OR (s.expires_at IS NOT NULL AND s.expires_at < excluded.expires_at);
+  END IF;
+  UPDATE public.rc_entitlement_sources SET active = false, event_at = p_event_at, event_id = p_event_id
+   WHERE user_id = v_row.user_id AND source = v_row.source AND product_id = v_row.product_id;
+  v_moved := v_moved + 1;
+ END LOOP;
+ IF v_moved > 0 THEN
+  FOREACH v_user IN ARRAY v_from LOOP PERFORM public.recompute_user_plan(v_user); END LOOP;
+  IF v_target IS NOT NULL THEN PERFORM public.recompute_user_plan(v_target); END IF;
+ END IF;
+ INSERT INTO public.rc_transfer_events(event_id, app_id, store, environment, event_at, transferred_from, transferred_to, outcome)
+ VALUES (p_event_id, p_app_id, p_store, p_environment, p_event_at, p_from, p_to, CASE WHEN v_moved > 0 THEN 'applied' ELSE 'ignored' END);
+ RETURN CASE WHEN v_moved > 0 THEN 'applied' ELSE 'ignored' END;
+END $$;
+REVOKE ALL ON FUNCTION public.rc_apply_transfer(text, text, text, text, timestamptz, text[], text[]) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.rc_apply_transfer(text, text, text, text, timestamptz, text[], text[]) TO service_role;
+-- Transfer records hold raw App User IDs without an FK: purge them with the account.
+CREATE OR REPLACE FUNCTION public.rc_transfer_events_purge_user() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+ DELETE FROM public.rc_transfer_events
+  WHERE EXISTS (SELECT 1 FROM unnest(transferred_from || transferred_to) x WHERE lower(x) = OLD.id::text);
+ RETURN OLD;
+END $$;
+REVOKE ALL ON FUNCTION public.rc_transfer_events_purge_user() FROM PUBLIC, anon, authenticated, service_role;
+DROP TRIGGER IF EXISTS rc_transfer_events_purge_user ON auth.users;
+CREATE TRIGGER rc_transfer_events_purge_user BEFORE DELETE ON auth.users
+ FOR EACH ROW EXECUTE FUNCTION public.rc_transfer_events_purge_user();
+
+-- ---------------------------------------------------------------------------
+-- 15. Square: a coach whose web subscription ended could never subscribe
+--     again. square_checkouts allowed ONE binding per user/merchant/location/
+--     plan and create-square-checkout answered 409 forever once it had a
+--     subscription_id. Bindings are now one per subscription (the edge function
+--     only opens a new one after every bound subscription has ended at Square);
+--     at most one UNBOUND (pending) checkout may exist per user/plan.
+--     redirect_url records which payment links send the buyer back to the app;
+--     links created before it are regenerated while still unpaid.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE r record;
+BEGIN
+ FOR r IN
+  SELECT c.conname FROM pg_constraint c
+   WHERE c.conrelid = 'public.square_checkouts'::regclass AND c.contype = 'u'
+     AND (SELECT array_agg(a.attname::text ORDER BY a.attname) FROM pg_attribute a
+           WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey))
+         = ARRAY['location_id', 'merchant_id', 'user_id', 'variation_id']
+ LOOP
+  EXECUTE format('ALTER TABLE public.square_checkouts DROP CONSTRAINT %I', r.conname);
+ END LOOP;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS square_checkouts_one_pending
+ ON public.square_checkouts (user_id, merchant_id, location_id, variation_id) WHERE subscription_id IS NULL;
+ALTER TABLE public.square_checkouts ADD COLUMN IF NOT EXISTS redirect_url text;

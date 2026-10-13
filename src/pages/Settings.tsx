@@ -209,7 +209,10 @@ const Settings = () => {
       const { data, error } = await bounded(supabase.functions.invoke("delete-account", { body: {} }));
       if (owner.current !== id) return;
       if (error || data?.error) throw error || new Error(data.error);
-      await signOut();
+      // The account is gone now. A failed server-side logout (network, or the
+      // deleted user's token being rejected) must not be reported as a failed
+      // deletion or leave the deleted account's session on this device.
+      await signOut().catch(() => supabase.auth.signOut({ scope: "local" }));
       toast({ title: "Account deleted", description: "Your Intentus account has been deleted." });
       navigate("/", { replace: true });
     } catch (error) {

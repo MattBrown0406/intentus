@@ -23,6 +23,7 @@ import {
   Shield, UserPlus, Send
 } from "lucide-react";
 import { brandLogo as logo } from "@/lib/brand";
+import { selectAllRows } from "@/lib/select-all-rows";
 
 interface UserProfile {
   user_id: string;
@@ -67,34 +68,24 @@ const Admin = () => {
 
   const fetchUsers = async () => {
     setLoading(true);
-
-    // Fetch profiles
-    const { data: profiles } = await supabase
-      .from("profiles")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (!profiles) { setLoading(false); return; }
-
-    // Fetch audit counts
-    const { data: audits } = await supabase
-      .from("baseline_audits")
-      .select("user_id, status");
-
-    // Fetch checkin counts
-    const { data: checkins } = await supabase
-      .from("check_ins")
-      .select("user_id, created_at");
-
-    // Fetch report counts
-    const { data: reports } = await supabase
-      .from("strategic_reports")
-      .select("user_id");
-
-    // Fetch coach clients
-    const { data: coachClients } = await supabase
-      .from("coach_clients")
-      .select("coach_user_id, client_user_id");
+    let profiles: UserProfile[], audits: { user_id: string }[], checkins: { user_id: string; created_at: string }[],
+      reports: { user_id: string }[], coachClients: { coach_user_id: string }[];
+    try {
+      // PostgREST caps every response at 1,000 rows, so unpaged reads silently
+      // undercount users, audits and check-ins once the tables grow past that.
+      [profiles, audits, checkins, reports, coachClients] = await Promise.all([
+        selectAllRows<UserProfile>((from, to) => supabase.from("profiles").select("*")
+          .order("created_at", { ascending: false }).order("user_id").range(from, to)),
+        selectAllRows<{ user_id: string }>((from, to) => supabase.from("baseline_audits").select("id, user_id").order("id").range(from, to)),
+        selectAllRows<{ user_id: string; created_at: string }>((from, to) => supabase.from("check_ins").select("id, user_id, created_at").order("id").range(from, to)),
+        selectAllRows<{ user_id: string }>((from, to) => supabase.from("strategic_reports").select("id, user_id").order("id").range(from, to)),
+        selectAllRows<{ coach_user_id: string }>((from, to) => supabase.from("coach_clients").select("id, coach_user_id").order("id").range(from, to)),
+      ]);
+    } catch (error) {
+      toast({ title: "Could not load users", description: error instanceof Error ? error.message : "Please refresh to retry.", variant: "destructive" });
+      setLoading(false);
+      return;
+    }
 
     const enriched: UserProfile[] = profiles.map((p) => {
       const userAudits = audits?.filter(a => a.user_id === p.user_id) || [];

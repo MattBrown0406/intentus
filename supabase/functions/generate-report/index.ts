@@ -5,6 +5,7 @@ import { buildIntentModelInstructions, buildIntentProfileSummary } from "../_sha
 import {
   COACHING_SAFETY_BOUNDARY,
   boundedArray,
+  isUsableStrategicReport,
   parseToolArguments,
   truncate,
 } from "../_shared/ai-guardrails.ts";
@@ -361,7 +362,10 @@ ${intentModelInstructions}`;
     const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
     if (!toolCall) throw new Error("No tool call in AI response");
 
-    const reportData = sanitizeStrategicReport(parseToolArguments(toolCall.function.arguments));
+    const reportData = sanitizeStrategicReport(parseToolArguments(toolCall?.function?.arguments));
+    // Never persist an empty shell: the unique audit_id index would lock the
+    // user into it permanently (generate-report then answers already_exists).
+    if (!isUsableStrategicReport(reportData)) throw new Error("AI report output incomplete");
 
     // Save report
     const { data: report, error: reportError } = await supabase

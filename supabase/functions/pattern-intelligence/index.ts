@@ -1,7 +1,7 @@
 import { readBoundedJson, fetchWithDeadline, limitErrorResponse } from "../_shared/request-limits.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
-import { boundedArray, parseToolArguments, safeJsonStringify, truncate } from "../_shared/ai-guardrails.ts";
+import { boundedArray, isUsableLongitudinalResult, parseToolArguments, safeJsonStringify, truncate } from "../_shared/ai-guardrails.ts";
 import { normalizePlanTier } from "../_shared/tier-policy.ts";
 
 const corsHeaders = {
@@ -424,6 +424,9 @@ ${cyclesText}`;
 
     const parsed = parseToolArguments(toolCall.function.arguments);
     const result = sanitizeLongitudinalResult(parsed);
+    // Report.tsx caches any payload with a string executive_summary; an empty
+    // one would suppress regeneration for good.
+    if (!isUsableLongitudinalResult(result)) throw new Error("AI pattern analysis output incomplete");
 
     // ── Return ────────────────────────────────────────────────────────────
     return new Response(

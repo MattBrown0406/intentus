@@ -68,12 +68,20 @@ const CoachClientAudit = () => {
       <div className="container mx-auto px-4 py-8 max-w-3xl">
         {/* Section Scores */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-8">
-          {AUDIT_SECTIONS.map((section, i) => (
-            <div key={i} className="bg-card rounded-xl border border-border p-4 text-center">
-              <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">{section}</p>
-              <p className="font-heading text-2xl font-bold text-primary">{scores[i] ?? "—"}</p>
-            </div>
-          ))}
+          {AUDIT_SECTIONS.map((section, i) => {
+            // The audit flow never writes baseline_audits.scores, so fall back to
+            // section coverage instead of a permanent "—".
+            const questions = AUDIT_QUESTIONS.filter(q => q.sectionIndex === i);
+            const answered = questions.filter(q => responses[q.id] != null && responses[q.id] !== "").length;
+            return (
+              <div key={i} className="bg-card rounded-xl border border-border p-4 text-center">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">{section}</p>
+                {scores[i] != null
+                  ? <p className="font-heading text-2xl font-bold text-primary">{scores[i]}</p>
+                  : <p className="font-heading text-2xl font-bold text-primary">{answered}/{questions.length}<span className="block text-xs font-normal text-muted-foreground">answered</span></p>}
+              </div>
+            );
+          })}
         </div>
 
         {/* Responses */}

@@ -2,7 +2,7 @@ import { readBoundedJson, validateAiInput, fetchWithDeadline, limitErrorResponse
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 import { buildIntentProfileSummary } from "../_shared/intentus-knowledge.ts";
-import { COACHING_SAFETY_BOUNDARY, boundedArray, boundedTail, safeJsonStringify, truncate } from "../_shared/ai-guardrails.ts";
+import { COACHING_SAFETY_BOUNDARY, boundedArray, boundedTail, editedPlanPhases, safeJsonStringify, truncate } from "../_shared/ai-guardrails.ts";
 import { buildTierPolicyPrompt, canUseAiChat, canUseAiDebrief, normalizePlanTier } from "../_shared/tier-policy.ts";
 import { chatMode } from "../_shared/payment-security.ts";
 import { buildPronounDirective } from "../_shared/pronouns.ts";
@@ -80,7 +80,7 @@ serve(async (req) => {
       supabase.from("profiles").select("*").eq("user_id", user.id).single(),
       supabase.from("check_ins").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).limit(10),
       supabase.from("baseline_audits").select("responses, scores, status").eq("user_id", user.id).eq("status", "completed").limit(1),
-      supabase.from("strategic_reports").select("north_star_focus, forced_choice, contradictions, pattern_analysis, ninety_day_plan, intent_model, created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1),
+      supabase.from("strategic_reports").select("north_star_focus, forced_choice, contradictions, pattern_analysis, ninety_day_plan, edited_ninety_day_plan, intent_model, created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1),
       // Fetch last 8 weekly_commitments for follow-through context
       supabase.from("weekly_commitments").select("commitment, outcome, week_start").eq("user_id", user.id).order("week_start", { ascending: false }).limit(9),
       supabase.from("north_star_goals").select("horizon, title, why, success_looks_like").eq("user_id", user.id).eq("is_active", true).order("horizon"),
@@ -141,11 +141,11 @@ serve(async (req) => {
     // 90-day plan current phase
     let currentPlanPhase: string | null = null;
     let currentPlanActions: string[] = [];
-    if (report?.ninety_day_plan) {
-      const plan = report.ninety_day_plan as NinetyDayPlan;
+    const editedPhases = editedPlanPhases(report?.edited_ninety_day_plan);
+    if (report && (report.ninety_day_plan || editedPhases)) {
       const reportCreated = new Date(report.created_at || todayMs);
       const daysSinceReport = Math.floor((todayMs - reportCreated.getTime()) / (1000 * 60 * 60 * 24));
-      const phases = getPlanPhases(plan);
+      const phases = editedPhases ?? getPlanPhases(report.ninety_day_plan as NinetyDayPlan);
       if (Array.isArray(phases) && phases.length > 0) {
         let targetPhase = phases[0];
         if (daysSinceReport >= 60 && phases.length >= 3) targetPhase = phases[2];
@@ -185,7 +185,8 @@ serve(async (req) => {
       if (report.forced_choice) userContext += `Forced Choice: ${report.forced_choice}\n`;
       if (report.contradictions) userContext += `Key Contradictions: ${safeJsonStringify(report.contradictions, 2500)}\n`;
       if (report.pattern_analysis) userContext += `Patterns: ${safeJsonStringify(report.pattern_analysis, 3000)}\n`;
-      if (report.ninety_day_plan) userContext += `90-Day Plan: ${safeJsonStringify(report.ninety_day_plan, 3000)}\n`;
+      if (editedPhases) userContext += `90-Day Plan (current, as edited/refreshed by the user): ${safeJsonStringify(editedPhases, 3000)}\n`;
+      else if (report.ninety_day_plan) userContext += `90-Day Plan: ${safeJsonStringify(report.ninety_day_plan, 3000)}\n`;
       
       userContext += "\n";
     }

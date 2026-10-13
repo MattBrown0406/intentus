@@ -1,7 +1,7 @@
 import { readBoundedJson, fetchWithDeadline, limitErrorResponse } from "../_shared/request-limits.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
-import { boundedArray, parseToolArguments, safeJsonStringify, truncate } from "../_shared/ai-guardrails.ts";
+import { boundedArray, isUsablePlanRefresh, parseToolArguments, safeJsonStringify, truncate } from "../_shared/ai-guardrails.ts";
 import { normalizePlanTier } from "../_shared/tier-policy.ts";
 
 const corsHeaders = {
@@ -36,11 +36,14 @@ function avg(nums: number[]): number {
 }
 
 function sanitizeRefreshedPhases(phases: unknown): RefreshedPhase[] {
-  return boundedArray<Record<string, unknown>>(phases, 3).map((p, i) => ({
+  return boundedArray<unknown>(phases, 3).map((value, i) => {
+    const p = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return {
     phase_label: truncate(p.phase_label, 80, `Phase ${i + 1}`),
     title: truncate(p.title, 160, ""),
     actions: boundedArray<unknown>(p.actions, 4).map((a) => truncate(a, 280)).filter(Boolean),
-  }));
+    };
+  });
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -337,8 +340,9 @@ Rules:
     const parsed = parseToolArguments(toolCall.function.arguments);
     const refreshedPhases = sanitizeRefreshedPhases(parsed.phases);
 
-    if (refreshedPhases.length !== 3) {
-      throw new Error(`Expected 3 phases from AI, got ${refreshedPhases.length}`);
+    // An empty phase would overwrite the user's edited plan with nothing.
+    if (!isUsablePlanRefresh(refreshedPhases)) {
+      throw new Error("AI plan refresh output incomplete");
     }
 
     // ── Persist to DB ─────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { format } from 'date-fns';
 import { Flag, FileText, Star, CheckSquare, Check, Trash2, ChevronDown, ChevronUp, Plus, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -67,7 +67,12 @@ export const CoachAnnotations = ({
   const [adding, setAdding] = useState(false);
   const [visibleToClient, setVisibleToClient] = useState(false);
 
+  // Bumped per load so a slow response for a previous client/context can't
+  // overwrite the list for the one currently shown.
+  const loadGeneration = useRef(0);
+
   const loadAnnotations = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     let query = supabase
       .from('coach_annotations')
       .select('*')
@@ -79,12 +84,14 @@ export const CoachAnnotations = ({
     if (contextId) query = query.eq('context_id', contextId);
 
     const { data, error } = await query;
+    if (generation !== loadGeneration.current) return;
     if (!error && data) {
       setAnnotations(data as Annotation[]);
     }
   }, [clientUserId, coachId, contextType, contextId]);
 
   useEffect(() => {
+    setAnnotations([]);
     loadAnnotations();
   }, [loadAnnotations]);
 
@@ -138,12 +145,15 @@ export const CoachAnnotations = ({
   const resolveAnnotation = async (id: string) => {
     // Optimistic
     setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, resolved: true } : a)));
-    const { error } = await supabase
+    // RLS turns a no-longer-permitted write (client turned sharing off, coach
+    // plan lapsed) into zero rows with no error: confirm the row changed.
+    const { data, error } = await supabase
       .from('coach_annotations')
       .update({ resolved: true })
-      .eq('id', id);
+      .eq('id', id)
+      .select('id');
 
-    if (error) {
+    if (error || !data?.length) {
       setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, resolved: false } : a)));
       toast({ title: 'Failed to resolve', variant: 'destructive' });
     }
@@ -151,8 +161,8 @@ export const CoachAnnotations = ({
 
   const deleteAnnotation = async (id: string) => {
     setAnnotations((prev) => prev.filter((a) => a.id !== id));
-    const { error } = await supabase.from('coach_annotations').delete().eq('id', id);
-    if (error) {
+    const { data, error } = await supabase.from('coach_annotations').delete().eq('id', id).select('id');
+    if (error || !data?.length) {
       toast({ title: 'Failed to delete', variant: 'destructive' });
       await loadAnnotations();
     }

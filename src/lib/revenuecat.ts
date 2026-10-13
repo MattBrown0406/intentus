@@ -86,7 +86,11 @@ export function getPlanTierFromCustomerInfo(customerInfo: CustomerInfo): PlanTie
 }
 
 export async function syncSupabasePlanTierFromCustomerInfo(userId: string, _customerInfo: CustomerInfo) {
-  // Only the verified billing webhook may grant access. Client SDK state is not authority.
+  return readVerifiedPlanTier(userId);
+}
+
+// Only the verified billing webhook may grant access. Client SDK state is not authority.
+export async function readVerifiedPlanTier(userId: string): Promise<Exclude<PlanTier, "free"> | null> {
   const { data, error } = await supabase
     .from("profiles")
     .select("plan_tier")
@@ -97,4 +101,30 @@ export async function syncSupabasePlanTierFromCustomerInfo(userId: string, _cust
   if (tier === "coach" || tier === "premium" || tier === "exec") return tier;
   if (tier === "pro") return "exec";
   return null;
+}
+
+// The store/Square confirms payment before its webhook updates profiles.plan_tier,
+// so a single read right after checkout almost always sees the old tier. Poll the
+// server-verified tier briefly until it reaches the purchased tier.
+export async function waitForVerifiedPlanTier(
+  userId: string,
+  target: Exclude<PlanTier, "free">,
+  { attempts = 8, delayMs = 2000, isCurrent = () => true }: { attempts?: number; delayMs?: number; isCurrent?: () => boolean } = {},
+): Promise<Exclude<PlanTier, "free"> | null> {
+  let tier: Exclude<PlanTier, "free"> | null = null;
+  let lastError: unknown = null;
+  let read = false;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (!isCurrent()) break;
+    try {
+      tier = await readVerifiedPlanTier(userId);
+      read = true;
+      if (tier === target) return tier;
+    } catch (error) {
+      lastError = error; // transient read failure: keep waiting for the webhook
+    }
+  }
+  if (!read && lastError) throw lastError;
+  return tier;
 }

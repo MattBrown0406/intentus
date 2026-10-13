@@ -33,7 +33,10 @@ serve(async (req: Request) => {
         const order = (await squareRequest(c,`/orders/${encodeURIComponent(p.order_id)}`)).order;
         if (order.customer_id !== p.customer_id || order.location_id !== c.location || !moneyMatches(order.total_money)) throw new Error('Order mismatch');
         const result = await squareRequest(c,'/subscriptions/search',{query:{filter:{customer_ids:[p.customer_id],location_ids:[c.location]}}});
-        const candidates = (result.subscriptions ?? []).filter((s:any)=>s.plan_variation_id === c.variation);
+        // Subscriptions from earlier (ended) checkouts of the same customer
+        // predate this binding; only one created for this checkout may match.
+        const notBefore = Date.parse(binding.created_at) - 60000;
+        const candidates = (result.subscriptions ?? []).filter((s:any)=>s.plan_variation_id === c.variation && Date.parse(s.created_at) >= notBefore);
         // Never guess between subscriptions or accept incomplete pagination.
         if (result.cursor || candidates.length !== 1) return reply(503,'subscription binding unresolved');
         sub = candidates[0];

@@ -11,11 +11,13 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { brandLogo as logo } from "@/lib/brand";
 import { getTierCapability, normalizePlanTier, type PlanTier } from "@/lib/tier-policy";
+import { functionErrorMessage } from "@/lib/function-errors";
 import {
   withRevenueCatIdentity,
   isNativeRevenueCatAvailable,
   REVENUECAT_PRODUCT_IDS,
   syncSupabasePlanTierFromCustomerInfo,
+  waitForVerifiedPlanTier,
 } from "@/lib/revenuecat";
 
 type Plan = {
@@ -130,7 +132,13 @@ const Subscribe = () => {
         title: "Checkout returned",
         description: "We are checking your plan. Access activates after payment verification.",
       });
-      loadTier();
+      // Square's webhook usually lands after the redirect: poll the verified tier.
+      if (user) {
+        const id = user.id;
+        void waitForVerifiedPlanTier(id, "coach", { isCurrent: () => account.current === id })
+          .then((tier) => { if (account.current === id && tier) setCurrentTier(tier); })
+          .catch(() => undefined);
+      }
       searchParams.delete("payment");
       setSearchParams(searchParams, { replace: true });
     }
@@ -157,8 +165,8 @@ const Subscribe = () => {
     busy.current = true;
     setActionProductId(plan.productId);
     try {
-      const result = await withRevenueCatIdentity(user.id, () => Purchases.purchasePackage({ aPackage: selectedPackage }));
-      const newTier = await syncSupabasePlanTierFromCustomerInfo(user.id, result.customerInfo);
+      await withRevenueCatIdentity(user.id, () => Purchases.purchasePackage({ aPackage: selectedPackage }));
+      const newTier = await waitForVerifiedPlanTier(user.id, plan.tier, { isCurrent: () => account.current === user.id });
       if (account.current !== user.id) return;
       if (newTier === plan.tier) {
         setCurrentTier(newTier);
@@ -186,7 +194,7 @@ const Subscribe = () => {
       const { data, error } = await supabase.functions.invoke("create-square-checkout", {
         body: { plan: "coach_monthly" },
       });
-      if (error) throw error;
+      if (error) throw new Error(await functionErrorMessage(error, "Could not start web checkout."));
       const url = (data as { checkout_url?: string })?.checkout_url;
       if (!url) throw new Error("No checkout URL returned");
       if (account.current !== user.id) return;
