@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
-import { inviteTier } from "../_shared/payment-security.ts";
+import { coachInviteMayLink, inviteTier } from "../_shared/payment-security.ts";
 import { readBoundedJson, limitErrorResponse, RequestLimitError } from "../_shared/request-limits.ts";
 
 const corsHeaders = {
@@ -80,10 +80,11 @@ serve(async (req) => {
     }
 
     // Invite the user - this sends them an email with a link to set their password
+    const inviteNonce = crypto.randomUUID();
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email, {
       data: {
         display_name,
-        ...(coach_user_id ? { coach_user_id } : {}),
+        ...(coach_user_id ? { coach_user_id, coach_invite_nonce: inviteNonce } : {}),
         ...(coach_name ? { invited_by: coach_name } : {}),
       },
       // Must match the production web origin (src/lib/site.ts SITE_URL) and the Auth redirect allow-list.
@@ -104,9 +105,9 @@ serve(async (req) => {
       // attach a pre-existing self-signup to a coach (that would expose the
       // person's data to the coach without consent); only accounts created by
       // this invite, or previously invited by this same coach, may be linked.
-      const createdMs = Date.parse(invited.created_at ?? "");
-      const freshlyCreated = Number.isFinite(createdMs) && Date.now() - createdMs < 10 * 60 * 1000;
-      if (!freshlyCreated && invited.user_metadata?.coach_user_id !== coach_user_id) {
+      // (A created_at recency window is not proof: a stranger who self-signed up
+      // minutes ago and has not confirmed yet would be linked without consent.)
+      if (!coachInviteMayLink(invited, inviteNonce, coach_user_id)) {
         return json({ error: "Invitation could not be sent. The email may already have an account." }, 409);
       }
 

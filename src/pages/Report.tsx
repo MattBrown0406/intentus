@@ -215,12 +215,15 @@ const Report = () => {
 
   useEffect(() => {
     loadCompletions();
-    // Load edited plan if exists
-    const edited = normalizeEditedPlan(report?.edited_ninety_day_plan);
-    if (edited) {
-      setEditedPlan(edited);
-    }
-  }, [loadCompletions, report]);
+  }, [loadCompletions]);
+
+  // The edited plan belongs to the loaded report. Reset it whenever a different
+  // report is shown (e.g. the fallback report is replaced by a newly generated
+  // one), and never re-apply it on unrelated re-renders, which would revert
+  // in-session action edits or a plan refresh.
+  useEffect(() => {
+    setEditedPlan(normalizeEditedPlan(report?.edited_ninety_day_plan));
+  }, [report]);
 
   const handleConfirmReaudit = async () => {
     if (!user) return;

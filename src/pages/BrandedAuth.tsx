@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth, bounded, safeDestination } from "@/contexts/AuthContext";
+import { useAuth, bounded, safeDestination, linkCoachAfterLogin } from "@/contexts/AuthContext";
 import { publicOrigin } from "@/lib/site";
 import { useLocation } from "react-router-dom";
 import { Navigate } from "react-router-dom";
@@ -124,6 +124,9 @@ const BrandedAuth = () => {
       } else if (isLogin) {
         const { error } = await bounded(supabase.auth.signInWithPassword({ email, password }));
         if (error) throw error;
+        // Existing accounts log in on a coach's page instead of signing up; store the
+        // slug so AuthContext links the coach exactly as it does for new sign-ups.
+        await linkCoachAfterLogin({ coach_slug: slug });
       } else {
         const { data, error } = await bounded(supabase.auth.signUp({ email, password, options: {
           data: { display_name: displayName, coach_slug: slug }, emailRedirectTo: `${publicOrigin()}/auth`,

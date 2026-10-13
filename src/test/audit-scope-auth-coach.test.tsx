@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuthProvider } from '@/contexts/AuthContext';
+import { AuthProvider, linkCoachAfterLogin } from '@/contexts/AuthContext';
 import { RESERVED_COACH_SLUGS, coachSlugError } from '@/lib/coach-slug';
 import { SITE_URL, publicOrigin } from '@/lib/site';
 
@@ -37,6 +37,26 @@ describe('coach invite metadata', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss invite' }));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(m.updateUser).toHaveBeenCalledWith({ data: { invite_code: null, coach_slug: null } });
+  });
+});
+
+describe('existing account joining a coach by logging in', () => {
+  it('redeems an invite attached after login (USER_UPDATED on the same user)', async () => {
+    m.invoke.mockResolvedValue({ data: { success: true }, error: null });
+    render(<AuthProvider><div>content</div></AuthProvider>);
+    act(() => event('SIGNED_IN', session('a')));
+    expect(m.invoke).not.toHaveBeenCalled();
+    act(() => event('USER_UPDATED', session('a', { invite_code: 'invite-123' })));
+    await waitFor(() => expect(m.invoke).toHaveBeenCalledWith('process-coach-invite', expect.objectContaining({ body: { invite_code: 'invite-123' } })));
+  });
+
+  it('stores the code on the account and never fails the completed login', async () => {
+    await linkCoachAfterLogin({ coach_slug: 'jane' });
+    expect(m.updateUser).toHaveBeenCalledWith({ data: { coach_slug: 'jane' } });
+    m.updateUser.mockRejectedValueOnce(new Error('offline'));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(linkCoachAfterLogin({ invite_code: 'x' })).resolves.toBeUndefined();
+    spy.mockRestore();
   });
 });
 

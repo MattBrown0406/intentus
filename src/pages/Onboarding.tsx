@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -52,6 +52,22 @@ const Onboarding = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+  // Sign-in lands here by default (safeDestination fallback). A returning,
+  // already-onboarded user must go to the dashboard instead of redoing
+  // onboarding and overwriting their saved preferences and intent profile.
+  const [checkingOnboarded, setCheckingOnboarded] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    void (async () => {
+      const { data } = await supabase.from("profiles").select("onboarding_completed").eq("user_id", user.id).maybeSingle();
+      if (!active) return;
+      if (data?.onboarding_completed) navigate("/dashboard", { replace: true });
+      else setCheckingOnboarded(false);
+    })().catch(() => { if (active) setCheckingOnboarded(false); });
+    return () => { active = false; };
+  }, [user, navigate]);
 
   const handleComplete = async () => {
     if (!user) return;
@@ -346,6 +362,14 @@ const Onboarding = () => {
       </Button>
     </div>,
   ];
+
+  if (checkingOnboarded) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center" role="status" aria-label="Loading">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">

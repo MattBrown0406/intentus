@@ -41,6 +41,19 @@ export function inviteTier(value: unknown): "free" | "exec" | "premium" | null {
   return value === "free" || value === "premium" ? value : null;
 }
 
+/** A coach invite may only link an account this exact invite call created (GoTrue
+ * stores the per-call nonce only on NEW users; re-inviting an existing unconfirmed
+ * account returns it with its original metadata), or one this coach invited before.
+ * Recency of created_at is NOT proof: a stranger's fresh self-signup would pass. */
+export function coachInviteMayLink(
+  invited: { user_metadata?: Record<string, unknown> | null },
+  nonce: string,
+  coachUserId: string,
+): boolean {
+  const meta = invited.user_metadata ?? {};
+  return (nonce.length > 0 && meta.coach_invite_nonce === nonce) || meta.coach_user_id === coachUserId;
+}
+
 export function chatMode(value: unknown): "chat" | "check-in-debrief" | null {
   if (value === undefined) return "chat";
   return value === "chat" || value === "check-in-debrief" ? value : null;

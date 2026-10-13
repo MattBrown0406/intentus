@@ -51,6 +51,14 @@ export async function cleanupBeforeSignOut(userId: string) {
   for (const cleanup of beforeSignOut) await bounded(cleanup(userId));
 }
 
+// Stores a coach invite on an account that logged in (rather than signed up) from an
+// invite or branded page; the AuthProvider effect below then redeems it. Login itself
+// already succeeded, so a failure here is logged rather than surfaced as a login error.
+export async function linkCoachAfterLogin(data: { invite_code: string } | { coach_slug: string }) {
+  const { error } = await bounded(supabase.auth.updateUser({ data })).catch(error => ({ error }));
+  if (error) console.error("Coach invite could not be attached to this account");
+}
+
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -96,7 +104,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         if (!metadata.invite_code && metadata.coach_slug) {
           const { data, error } = await bounded(supabase.rpc("get_public_coach_branding", { _slug: metadata.coach_slug }));
           if (error || !data?.[0]) throw error || new Error("Coach not found");
-          body = { invite_code: "__branded__", coach_user_id: data[0].coach_user_id };
+          body = { invite_code: "__branded__", coach_user_id: data[0].coach_user_id, coach_slug: metadata.coach_slug };
         }
         if (!active) return;
         const { data, error } = await bounded(supabase.functions.invoke("process-coach-invite", {
@@ -115,7 +123,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
     })();
     return () => { active = false; };
-  }, [session?.user.id, inviteRetry]);
+  }, [session?.user.id, session?.user.user_metadata?.invite_code, session?.user.user_metadata?.coach_slug, inviteRetry]);
 
   const signOut = async () => {
     if (user) await cleanupBeforeSignOut(user.id);

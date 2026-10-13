@@ -156,7 +156,8 @@ const CoachDashboard = () => {
     }
   };
   // Narrow RPCs derive ownership in PostgreSQL, not from browser identity arguments.
-  const coachRpc = supabase.rpc as unknown as (name: string, args: Record<string, unknown>) => PromiseLike<{ error: { message: string } | null }>;
+  // SupabaseClient.rpc reads `this.rest`; an unbound reference throws before any request.
+  const coachRpc = supabase.rpc.bind(supabase) as unknown as (name: string, args: Record<string, unknown>) => PromiseLike<{ error: { message: string } | null }>;
   const createInviteLink = () => runAction(() => coachRpc("coach_create_invite", { p_tier: newLinkTier, p_label: newLinkLabel || null }), "Invite link created");
   const deleteLink = (id: string) => runAction(() => coachRpc("coach_delete_invite", { p_link_id: id }), "Invite link deleted");
   const updateClientTier = (id: string, tier: string) => runAction(() => coachRpc("coach_update_client_tier", { p_relationship_id: id, p_tier: tier }), "Tier updated");

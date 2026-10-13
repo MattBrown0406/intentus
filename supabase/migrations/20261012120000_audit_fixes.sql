@@ -297,6 +297,9 @@ UPDATE public.strategic_reports r
 --     state), and re-checked after the profile locks as the concurrency guard.
 --     For a deleted invite the coach is unknown, so idempotent success requires
 --     the caller to also pass p_coach_user_id of the existing link.
+--     Branded (code-less) joins now also require the coach to have a
+--     coach_branding row (the edge function matches the caller's slug to it);
+--     previously any user could join ANY active coach by UUID alone.
 --     Owner (service_role), ACL and signature are preserved by CREATE OR REPLACE.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.coach_accept_invite(p_client_user_id uuid, p_invite_code text DEFAULT NULL, p_coach_user_id uuid DEFAULT NULL)
@@ -318,6 +321,12 @@ BEGIN
  IF v_coach IS NULL OR v_coach = p_client_user_id THEN RAISE EXCEPTION 'Invalid coach' USING ERRCODE = '22023'; END IF;
  IF EXISTS (SELECT 1 FROM public.coach_clients WHERE coach_user_id = v_coach AND client_user_id = p_client_user_id) THEN
   RETURN jsonb_build_object('success', true, 'coach_user_id', v_coach, 'message', 'Already linked');
+ END IF;
+ -- Branded (code-less) self-service joins only reach coaches with a public
+ -- branded page; process-coach-invite additionally matches the caller's slug.
+ IF (p_invite_code IS NULL OR p_invite_code = '__branded__')
+    AND NOT EXISTS (SELECT 1 FROM public.coach_branding WHERE coach_user_id = v_coach) THEN
+  RAISE EXCEPTION 'Invalid coach' USING ERRCODE = '22023';
  END IF;
  PERFORM 1 FROM public.profiles WHERE user_id IN (v_coach, p_client_user_id) ORDER BY user_id FOR UPDATE;
  IF EXISTS (SELECT 1 FROM public.coach_clients WHERE coach_user_id = v_coach AND client_user_id = p_client_user_id) THEN
@@ -371,3 +380,24 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION public.register_push_token(text, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.register_push_token(text, text) TO authenticated;
+
+-- ---------------------------------------------------------------------------
+-- 12. A report's owner is immutable for client roles. "Coaches can update
+--     client reports" checks is_client_of() on both the old and new row, so a
+--     coach could re-point client A's report (A's private audit analysis) at
+--     client B (user_id = B), disclosing it to B. Owners cannot move rows (their
+--     WITH CHECK pins user_id = auth.uid()); server roles are exempt.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.guard_strategic_report_owner() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = '' AS $$
+BEGIN
+ IF current_user IN ('postgres', 'service_role', 'supabase_admin') THEN RETURN NEW; END IF;
+ IF NEW.user_id IS DISTINCT FROM OLD.user_id THEN
+  RAISE EXCEPTION 'Report owner is immutable' USING ERRCODE = '42501';
+ END IF;
+ RETURN NEW;
+END $$;
+REVOKE ALL ON FUNCTION public.guard_strategic_report_owner() FROM PUBLIC, anon, authenticated;
+DROP TRIGGER IF EXISTS guard_strategic_report_owner ON public.strategic_reports;
+CREATE TRIGGER guard_strategic_report_owner BEFORE UPDATE ON public.strategic_reports
+ FOR EACH ROW EXECUTE FUNCTION public.guard_strategic_report_owner();

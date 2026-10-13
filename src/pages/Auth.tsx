@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { brandLogo as logo } from "@/lib/brand";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth, bounded, safeDestination } from "@/contexts/AuthContext";
+import { useAuth, bounded, safeDestination, linkCoachAfterLogin } from "@/contexts/AuthContext";
 import { publicOrigin } from "@/lib/site";
 import { useLocation } from "react-router-dom";
 import Seo from "@/components/seo/Seo";
@@ -46,6 +46,9 @@ const Auth = () => {
       } else if (isLogin) {
         const { error } = await bounded(supabase.auth.signInWithPassword({ email, password }));
         if (error) throw error;
+        // Existing accounts opening an invite link log in rather than sign up; store the
+        // code so AuthContext redeems it exactly as it does for new sign-ups.
+        if (inviteCode) await linkCoachAfterLogin({ invite_code: inviteCode });
       } else {
         const { data, error } = await bounded(supabase.auth.signUp({ email, password, options: {
           data: { display_name: displayName, invite_code: inviteCode || undefined }, emailRedirectTo: `${publicOrigin()}/auth`,

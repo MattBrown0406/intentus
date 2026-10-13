@@ -32,6 +32,12 @@ describe('coach RPC handlers', () => {
   await act(async () => reject(new Error('Clipboard denied')));
   expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Action failed', description: 'Clipboard denied' }));
  });
+ it('calls rpc bound to the Supabase client (SupabaseClient.rpc uses this.rest)', async () => {
+  const { supabase } = await import('@/integrations/supabase/client');
+  await open(); fireEvent.click(screen.getByText('Create Link'));
+  await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Invite link created' })));
+  expect(mocks.rpc.mock.contexts.at(-1)).toBe(supabase);
+ });
  it('deletes via ownership RPC', async () => { await open(); fireEvent.click(screen.getByLabelText('Delete invite link'));
   await waitFor(() => expect(mocks.rpc).toHaveBeenCalledWith('coach_delete_invite', { p_link_id: 'link' }));
  });

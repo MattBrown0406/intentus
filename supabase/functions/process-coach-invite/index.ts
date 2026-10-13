@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 import { readBoundedJson, limitErrorResponse, RequestLimitError } from "../_shared/request-limits.ts";
+import { BRANDED_INVITE, brandedSlug, isBrandedInvite, resolveBrandedCoach } from "../_shared/coach-invite.ts";
 
 
 
@@ -46,15 +47,37 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    const { invite_code, coach_user_id } = await readBoundedJson(req, { maxBytes: 8192 });
+    const { invite_code, coach_user_id, coach_slug } = await readBoundedJson(req, { maxBytes: 8192 });
     if ((invite_code != null && (typeof invite_code !== "string" || invite_code.length > 200)) ||
-        (coach_user_id != null && (typeof coach_user_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(coach_user_id)))) {
+        (coach_user_id != null && (typeof coach_user_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(coach_user_id))) ||
+        (coach_slug != null && typeof coach_slug !== "string")) {
       return new Response(JSON.stringify({ error: "Invalid invitation" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    // Branded (no invite code) links require the coach's public branded page:
+    // the slug from the request or the user's own auth metadata must resolve to
+    // a coach_branding row, and that row's coach is the only one linkable.
+    let coachId: string | null = coach_user_id ?? null;
+    if (isBrandedInvite(invite_code)) {
+      coachId = await resolveBrandedCoach(
+        brandedSlug(coach_slug, user.user_metadata?.coach_slug),
+        coach_user_id ?? null,
+        async (slug) => {
+          const { data: row, error: brandingError } = await supabase
+            .from("coach_branding").select("coach_user_id").eq("slug", slug).maybeSingle();
+          if (brandingError) throw brandingError;
+          return row;
+        },
+      );
+      if (!coachId) {
+        return new Response(JSON.stringify({ error: "Invitation could not be accepted. It may be inactive, expired, or full." }), {
+          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
     const { data, error } = await supabase.rpc("coach_accept_invite", {
       p_client_user_id: user.id,
-      p_invite_code: invite_code ?? null,
-      p_coach_user_id: coach_user_id ?? null,
+      p_invite_code: isBrandedInvite(invite_code) ? BRANDED_INVITE : invite_code,
+      p_coach_user_id: coachId,
     });
     if (error) {
       console.error("Invite redemption rejected", error.code);
