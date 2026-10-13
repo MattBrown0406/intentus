@@ -2,7 +2,7 @@ import { readBoundedJson, validateAiInput, fetchWithDeadline, limitErrorResponse
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 import { buildIntentProfileSummary } from "../_shared/intentus-knowledge.ts";
-import { COACHING_SAFETY_BOUNDARY, boundedArray, safeJsonStringify, truncate } from "../_shared/ai-guardrails.ts";
+import { COACHING_SAFETY_BOUNDARY, boundedArray, boundedTail, safeJsonStringify, truncate } from "../_shared/ai-guardrails.ts";
 import { buildTierPolicyPrompt, canUseAiChat, canUseAiDebrief, normalizePlanTier } from "../_shared/tier-policy.ts";
 import { chatMode } from "../_shared/payment-security.ts";
 import { buildPronounDirective } from "../_shared/pronouns.ts";
@@ -337,7 +337,9 @@ You are not a therapist. You are a grounded, emotionally intelligent operating c
 Keep responses focused and conversational. Do not lecture. Do not be permissive.`;
     }
 
-    const safeMessages = boundedArray<{ role?: string; content?: string }>(messages, 16)
+    // Keep the NEWEST turns: the client sends oldest-first history, so a head
+    // slice would drop the user's latest message from long conversations.
+    const safeMessages = boundedTail<{ role?: string; content?: string }>(messages, 16)
       .filter((message) => message.role === "user" || message.role === "assistant")
       .map((message) => ({
         role: message.role === "assistant" ? "assistant" : "user",
@@ -388,8 +390,8 @@ Keep responses focused and conversational. Do not lecture. Do not be permissive.
   } catch (e) {
     const limited = limitErrorResponse(e, corsHeaders);
     if (limited) return limited;
-    console.error("coaching-chat request failed");
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+    console.error("coaching-chat request failed:", e);
+    return new Response(JSON.stringify({ error: "Coaching is temporarily unavailable. Please try again." }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }

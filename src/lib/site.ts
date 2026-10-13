@@ -4,6 +4,12 @@ export const DEFAULT_TITLE = "Intentus | AI operating accountability software fo
 export const DEFAULT_DESCRIPTION = "Intentus helps founders, leaders, operators, and anyone serious about growth run an honest operating audit, choose the few metrics that matter, and stay accountable to a focused 90-day plan.";
 export const DEFAULT_OG_IMAGE = `${SITE_URL}/og-image.png`;
 
+// Links that leave the app (auth emails, copied invites) must use a web origin;
+// inside Capacitor the origin is capacitor://localhost, which nothing else can open.
+export function publicOrigin(location: Pick<Location, "protocol" | "origin"> = window.location) {
+  return location.protocol === "https:" || location.protocol === "http:" ? location.origin : SITE_URL;
+}
+
 export type JsonLd = Record<string, unknown> | Array<Record<string, unknown>>;
 
 export const organizationJsonLd = {

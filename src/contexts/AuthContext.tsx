@@ -103,6 +103,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           body, headers: { Authorization: `Bearer ${session.access_token}` },
         }));
         if (error || data?.error) throw error || new Error(data.error);
+        // The code lives in durable user metadata. Once redeemed, consume it so a
+        // later session cannot silently re-link a removed client, nor surface a
+        // permanent error after the coach deletes or expires the invite link.
+        if (!active) return;
+        // Redemption already succeeded and is idempotent; a failed cleanup must not report failure.
+        const cleared = await bounded(supabase.auth.updateUser({ data: { invite_code: null, coach_slug: null } })).catch(error => ({ error }));
+        if (cleared.error) console.error("Coach invite metadata cleanup failed");
       } catch (error) {
         if (active) setInviteError(error instanceof Error ? error.message : "Coach link failed. Please retry.");
       }
@@ -116,9 +123,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (error) throw error;
   };
 
+  // A permanently invalid invite (deleted/expired link) must not nag every session.
+  const dismissInvite = async () => {
+    const { error } = await bounded(supabase.auth.updateUser({ data: { invite_code: null, coach_slug: null } })).catch(error => ({ error }));
+    if (!error) setInviteError("");
+  };
+
   return (
     <AuthContext.Provider value={{ user, session, loading, signOut }}>
-      {inviteError && <div role="alert">Coach link failed: {inviteError} <button onClick={() => setInviteRetry(n => n + 1)}>Retry coach link</button></div>}
+      {inviteError && <div role="alert">Coach link failed: {inviteError} <button onClick={() => setInviteRetry(n => n + 1)}>Retry coach link</button> <button onClick={() => void dismissInvite()}>Dismiss invite</button></div>}
       {children}
     </AuthContext.Provider>
   );

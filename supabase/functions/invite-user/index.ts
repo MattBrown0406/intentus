@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
 import { inviteTier } from "../_shared/payment-security.ts";
+import { readBoundedJson, limitErrorResponse, RequestLimitError } from "../_shared/request-limits.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -45,33 +46,37 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("plan_tier")
-      .eq("user_id", user.id)
-      .single();
-
-    if (!["coach"].includes(profile?.plan_tier)) {
-      return new Response(JSON.stringify({ error: "Coach tier required" }), {
-        status: 403,
+    const json = (body: unknown, status: number) =>
+      new Response(JSON.stringify(body), {
+        status,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+
+    // Admin.tsx is the caller in the app (admins comp a tier, no coach link);
+    // active coaches may also invite clients (linked + tier via coach grant).
+    const [{ data: profile, error: profileReadError }, { data: adminRole, error: roleError }] = await Promise.all([
+      supabase.from("profiles").select("plan_tier, is_active").eq("user_id", user.id).maybeSingle(),
+      supabase.from("user_roles").select("role").eq("user_id", user.id).eq("role", "admin").maybeSingle(),
+    ]);
+    if (profileReadError || roleError) throw new Error("Caller authorization lookup failed");
+    const isAdmin = !!adminRole;
+    const isCoach = profile?.plan_tier === "coach" && profile?.is_active === true;
+
+    if (!isAdmin && !isCoach) {
+      return json({ error: "Admin or active Coach required" }, 403);
     }
 
-    const { email, display_name, plan_tier: requestedTier, coach_user_id: requestedCoach, coach_name } = await req.json();
+    const { email, display_name, plan_tier: requestedTier, coach_user_id: requestedCoach, coach_name } = await readBoundedJson(req, { maxBytes: 8192 });
     const plan_tier = inviteTier(requestedTier);
-    const coach_user_id = user.id;
+    // Admins invite without a coach link unless they explicitly invite as their own (coach) client.
+    const coach_user_id = isCoach && (!isAdmin || requestedCoach === user.id) ? user.id : null;
     if (!plan_tier || (requestedCoach && requestedCoach !== user.id)) {
-      return new Response(JSON.stringify({ error: "Invalid coach or client tier" }), {
-        status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return json({ error: "Invalid coach or client tier" }, 403);
     }
 
-    if (!email || !display_name) {
-      return new Response(JSON.stringify({ error: "email and display_name are required" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (typeof email !== "string" || !email || typeof display_name !== "string" || !display_name.trim() ||
+        email.length > 320 || display_name.length > 200 || (coach_name != null && (typeof coach_name !== "string" || coach_name.length > 200))) {
+      return json({ error: "email and display_name are required" }, 400);
     }
 
     // Invite the user - this sends them an email with a link to set their password
@@ -81,38 +86,60 @@ serve(async (req) => {
         ...(coach_user_id ? { coach_user_id } : {}),
         ...(coach_name ? { invited_by: coach_name } : {}),
       },
-      redirectTo: "https://intentus.app/onboarding",
+      // Must match the production web origin (src/lib/site.ts SITE_URL) and the Auth redirect allow-list.
+      redirectTo: "https://intentusai.com/onboarding",
     });
 
 
     if (inviteError) {
-      throw inviteError;
+      console.error("Invite rejected:", inviteError.status);
+      return json({ error: "Invitation could not be sent. The email may already have an account." }, 409);
     }
 
-    const userId = inviteData.user.id;
+    const invited = inviteData.user;
+    const userId = invited.id;
 
-    // Create profile with the specified plan tier
-    const { error: profileError } = await supabase.from("profiles").upsert({
-      user_id: userId,
-      display_name,
-      plan_tier: plan_tier || "free",
-      onboarding_completed: false,
-    }, { onConflict: "user_id" });
-
-    if (profileError) {
-      throw profileError;
-    }
-
-    // If this is a coach invite, create the coach-client relationship
     if (coach_user_id) {
-      const { error: linkError } = await supabase.from("coach_clients").insert({
+      // GoTrue re-invites an EXISTING unconfirmed account and returns it. Never
+      // attach a pre-existing self-signup to a coach (that would expose the
+      // person's data to the coach without consent); only accounts created by
+      // this invite, or previously invited by this same coach, may be linked.
+      const createdMs = Date.parse(invited.created_at ?? "");
+      const freshlyCreated = Number.isFinite(createdMs) && Date.now() - createdMs < 10 * 60 * 1000;
+      if (!freshlyCreated && invited.user_metadata?.coach_user_id !== coach_user_id) {
+        return json({ error: "Invitation could not be sent. The email may already have an account." }, 409);
+      }
+
+      // Profile row is created by the auth trigger; only set the display name.
+      // Paid access for coach clients is a coach grant aggregated by
+      // recompute_user_plan(). Writing profiles.plan_tier here would be captured
+      // as a permanent 'legacy' entitlement that survives unlinking/coach churn.
+      const { error: profileError } = await supabase.from("profiles").upsert({
+        user_id: userId,
+        display_name,
+        onboarding_completed: false,
+      }, { onConflict: "user_id" });
+      if (profileError) throw profileError;
+
+      const { error: linkError } = await supabase.from("coach_clients").upsert({
         coach_user_id,
         client_user_id: userId,
-        assigned_tier: plan_tier || "free",
-      });
-      if (linkError) {
-        throw linkError;
-      }
+        assigned_tier: plan_tier,
+      }, { onConflict: "coach_user_id,client_user_id", ignoreDuplicates: true });
+      if (linkError) throw linkError;
+
+      const { error: recomputeError } = await supabase.rpc("recompute_user_plan", { p_user_id: userId });
+      if (recomputeError) throw recomputeError;
+    } else {
+      // Admin comp grant: a direct, server-managed profile tier (recorded by the
+      // rc_preserve_external_grant trigger as an admin/legacy grant).
+      const { error: profileError } = await supabase.from("profiles").upsert({
+        user_id: userId,
+        display_name,
+        plan_tier,
+        onboarding_completed: false,
+      }, { onConflict: "user_id" });
+      if (profileError) throw profileError;
     }
 
     return new Response(JSON.stringify({ success: true, user_id: userId }), {
@@ -120,8 +147,10 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
+    const limited = error instanceof RequestLimitError ? limitErrorResponse(error, corsHeaders) : null;
+    if (limited) return limited;
     console.error("Invite error:", error);
-    return new Response(JSON.stringify({ error: (error as Error).message }), {
+    return new Response(JSON.stringify({ error: "Invitation failed" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

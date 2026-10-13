@@ -25,9 +25,20 @@ export async function verifySquareSignature(
   }
 }
 
-export function inviteTier(value: unknown): "free" | "pro" | "premium" | null {
+/** Constant-time comparison for shared-secret headers (no early exit on mismatch). */
+export function timingSafeEqualString(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const x = enc.encode(a), y = enc.encode(b);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+  return diff === 0;
+}
+
+// Database Executive tier is `exec`; legacy `pro` is accepted and normalized.
+export function inviteTier(value: unknown): "free" | "exec" | "premium" | null {
   if (value === undefined || value === null) return "free";
-  return value === "free" || value === "pro" || value === "premium" ? value : null;
+  if (value === "pro" || value === "exec") return "exec";
+  return value === "free" || value === "premium" ? value : null;
 }
 
 export function chatMode(value: unknown): "chat" | "check-in-debrief" | null {

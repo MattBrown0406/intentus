@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 import { rcEventArgs } from '../_shared/rc-events.ts';
+import { timingSafeEqualString } from '../_shared/payment-security.ts';
 type Result = {data: unknown; error: {code?:string} | null};
 type Dependencies = { env: (key:string)=>string|undefined; apply: (args:Record<string,unknown>)=>Promise<Result> };
 const production: Dependencies = {
@@ -17,7 +18,7 @@ export function createHandler(deps: Dependencies) {
   if(req.method!=='POST') return reply(405,{error:'Method not allowed'});
   const secret=deps.env('REVENUECAT_WEBHOOK_SECRET');
   if(!secret) return reply(503,{error:'Webhook not configured'});
-  if(req.headers.get('Authorization')!==`Bearer ${secret}`) return reply(401,{error:'Unauthorized'});
+  if(!timingSafeEqualString(req.headers.get('Authorization') ?? '',`Bearer ${secret}`)) return reply(401,{error:'Unauthorized'});
   let args;
   try {
    const reader=req.body?.getReader(); if(!reader) return reply(400,{error:'Missing body'});

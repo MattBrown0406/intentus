@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
 import { safeFetchHTML, SafeFetchError } from "../_shared/safe-fetch.ts";
+import { readBoundedJson, limitErrorResponse, RequestLimitError } from "../_shared/request-limits.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -42,7 +43,7 @@ serve(async (req) => {
       });
     }
 
-    const { url } = await req.json();
+    const { url } = await readBoundedJson(req, { maxBytes: 8192 });
     if (!url) {
       return new Response(JSON.stringify({ error: "url is required" }), {
         status: 400,
@@ -119,8 +120,12 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
+    const limited = error instanceof RequestLimitError ? limitErrorResponse(error, corsHeaders) : null;
+    if (limited) return limited;
     console.error("Brand extraction error:", error);
-    return new Response(JSON.stringify({ error: (error as Error).message }), {
+    // Only curated SafeFetchError messages are user-facing; runtime/network
+    // errors can carry resolved addresses or internals.
+    return new Response(JSON.stringify({ error: error instanceof SafeFetchError ? error.message : "Brand extraction failed" }), {
       status: error instanceof SafeFetchError ? error.status : 502,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

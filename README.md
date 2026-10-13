@@ -26,7 +26,7 @@ It helps users:
 
 ## Domain assumptions
 
-This branch uses `https://intentus.ai` as the canonical production URL for metadata and the sitemap. If the live domain is different, update:
+This branch uses `https://intentusai.com` as the canonical production URL for metadata and the sitemap. If the live domain is different, update:
 
 - `src/lib/site.ts`
 - `index.html`

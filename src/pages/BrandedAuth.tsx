@@ -6,8 +6,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth, bounded, safeDestination } from "@/contexts/AuthContext";
+import { publicOrigin } from "@/lib/site";
 import { useLocation } from "react-router-dom";
 import { Navigate } from "react-router-dom";
+import Seo from "@/components/seo/Seo";
 
 interface Branding {
   coach_user_id: string;
@@ -42,10 +44,15 @@ const BrandedAuth = () => {
 
   useEffect(() => {
     if (!slug) return;
+    // The route component is reused across /:slug changes; never show the
+    // previous coach's branding (or a stale "not found") for the new slug.
+    let active = true;
+    setBranding(null); setCoachName(""); setNotFound(false); setLoadingBranding(true);
     const load = async () => {
       const { data, error } = await supabase.rpc("get_public_coach_branding", {
         _slug: slug,
       });
+      if (!active) return;
 
       const row = Array.isArray(data) ? data[0] : null;
       if (error || !row) {
@@ -68,7 +75,8 @@ const BrandedAuth = () => {
       setCoachName(row.coach_display_name || "");
       setLoadingBranding(false);
     };
-    void load().catch(() => { setNotFound(true); setLoadingBranding(false); });
+    void load().catch(() => { if (active) { setNotFound(true); setLoadingBranding(false); } });
+    return () => { active = false; };
   }, [slug]);
 
 
@@ -82,9 +90,12 @@ const BrandedAuth = () => {
     );
   }
 
+  // Every unknown single-segment URL lands here; without its own tags it would
+  // inherit the homepage title/canonical and be indexed as a soft 404.
   if (notFound) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Seo title="Page not found" description="This Intentus page doesn't exist." path={`/${slug ?? ""}`} noindex />
         <div className="text-center space-y-4">
           <h2 className="font-heading text-xl font-bold text-foreground">Coach not found</h2>
           <p className="text-muted-foreground">This coaching page doesn't exist.</p>
@@ -106,7 +117,7 @@ const BrandedAuth = () => {
     setLoading(true);
     try {
       if (showReset) {
-        const { error } = await bounded(supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` }));
+        const { error } = await bounded(supabase.auth.resetPasswordForEmail(email, { redirectTo: `${publicOrigin()}/reset-password` }));
         if (error) throw error;
         toast({ title: "Check your email", description: "We sent you a password reset link." });
         setShowReset(false);
@@ -115,7 +126,7 @@ const BrandedAuth = () => {
         if (error) throw error;
       } else {
         const { data, error } = await bounded(supabase.auth.signUp({ email, password, options: {
-          data: { display_name: displayName, coach_slug: slug }, emailRedirectTo: `${window.location.origin}/auth`,
+          data: { display_name: displayName, coach_slug: slug }, emailRedirectTo: `${publicOrigin()}/auth`,
         } }));
         if (error) throw error;
         if (!data.session) toast({ title: "Check your email", description: "Confirm your email, then sign in to finish linking your coach." });
@@ -132,6 +143,12 @@ const BrandedAuth = () => {
         background: `linear-gradient(135deg, ${primary}08, ${secondary}05, ${primary}03)`,
       }}
     >
+      <Seo
+        title={branding.company_name ? `Sign in to ${branding.company_name}` : "Coach sign in"}
+        description={branding.tagline || "Create your account or sign in to your coach's Intentus program."}
+        path={`/${branding.slug}`}
+        noindex
+      />
       <div className="w-full max-w-md">
         {/* Coach branding header */}
         <div className="flex flex-col items-center gap-3 mb-8">

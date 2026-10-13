@@ -116,7 +116,9 @@ serve(async (req) => {
     const requestBody = await readBoundedJson(req);
     validateAiInput("generate-report", requestBody);
     const { audit_id } = requestBody;
-    if (!audit_id) throw new Error("audit_id is required");
+    const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+      status, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
 
     // Get audit data
     const { data: audit, error: auditError } = await supabase
@@ -126,8 +128,8 @@ serve(async (req) => {
       .eq("user_id", user.id)
       .single();
 
-    if (auditError || !audit) throw new Error("Audit not found");
-    if (audit.status !== "completed") throw new Error("Audit not completed");
+    if (auditError || !audit) return reply({ error: "Audit not found" }, 404);
+    if (audit.status !== "completed") return reply({ error: "Audit not completed" }, 409);
 
     // Check if report already exists
     const { data: existing } = await supabase
@@ -377,7 +379,21 @@ ${intentModelInstructions}`;
       .select("id")
       .single();
 
-    if (reportError) throw reportError;
+    if (reportError) {
+      // strategic_reports_audit_id_unique: a concurrent request already saved the
+      // report for this audit. Return it with the same "already exists" shape.
+      if (reportError.code === "23505") {
+        const { data: winner, error: winnerError } = await supabase
+          .from("strategic_reports")
+          .select("id")
+          .eq("audit_id", audit_id)
+          .eq("user_id", user.id)
+          .limit(1)
+          .maybeSingle();
+        if (!winnerError && winner?.id) return reply({ report_id: winner.id, already_exists: true });
+      }
+      throw reportError;
+    }
 
     return new Response(JSON.stringify({ report_id: report.id }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -385,8 +401,8 @@ ${intentModelInstructions}`;
   } catch (e) {
     const limited = limitErrorResponse(e, corsHeaders);
     if (limited) return limited;
-    console.error("generate-report request failed");
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+    console.error("generate-report request failed:", e);
+    return new Response(JSON.stringify({ error: "Report generation failed. Please try again." }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }

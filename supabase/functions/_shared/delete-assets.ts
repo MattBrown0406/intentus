@@ -10,7 +10,7 @@ export interface AssetBucket {
 }
 
 export class AccountDeletionError extends Error {
-  constructor(public readonly phase: "storage" | "auth", cause: unknown) {
+  constructor(public readonly phase: "billing" | "storage" | "auth", cause: unknown) {
     super(`Account deletion ${phase} phase failed; retry required`, { cause });
     this.name = "AccountDeletionError";
   }

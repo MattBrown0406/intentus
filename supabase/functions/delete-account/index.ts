@@ -4,6 +4,11 @@ import {
   AccountDeletionError,
   deleteAccountWithAssets,
 } from "../_shared/delete-assets.ts";
+import {
+  cancelSquareSubscriptions,
+  squareConfig,
+  squareRequest,
+} from "../_shared/square.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -48,6 +53,28 @@ serve(async (req) => {
     }
 
     const admin = createClient(supabaseUrl, serviceRoleKey);
+
+    // Deleting the account cascades square_checkouts, but Square would keep
+    // charging the $299.99/month Coach subscription with no account behind it.
+    // Stop renewal first; on any failure abort before deleting anything.
+    try {
+      const { data: checkouts, error: checkoutError } = await admin
+        .from("square_checkouts")
+        .select("subscription_id")
+        .eq("user_id", user.id)
+        .not("subscription_id", "is", null);
+      if (checkoutError) throw checkoutError;
+      const ids = (checkouts ?? []).map((row) => row.subscription_id as string);
+      if (ids.length) {
+        const config = squareConfig((key) => Deno.env.get(key));
+        await cancelSquareSubscriptions(
+          ids,
+          (path, body) => squareRequest(config, path, body),
+        );
+      }
+    } catch (error) {
+      throw new AccountDeletionError("billing", error);
+    }
 
     // Nontransactional Storage first; only Auth/public cleanup can roll back.
     // Concurrent uploads remain possible until a durable job + write fence exists.

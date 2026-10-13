@@ -11,6 +11,19 @@ import { useToast } from "@/hooks/use-toast";
 import { formatLensLabel, type IntentProfile } from "@/lib/intentus-architecture";
 import { normalizePlanTier, type PlanTier } from "@/lib/tier-policy";
 import type { Json } from "@/integrations/supabase/types";
+import { canReaudit, archiveAndResetAudit } from "@/lib/reaudit";
+import { format } from "date-fns";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 interface ChatMessage {
   role: "system" | "user" | "coach";
@@ -137,6 +150,8 @@ async function streamCoachResponse({
 
 const Audit = () => {
   const answerFlight = useRef(false);
+  const startFreshFlight = useRef(false);
+  const [startingFresh, setStartingFresh] = useState(false);
   const [answerSaving, setAnswerSaving] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [initAttempt, setInitAttempt] = useState(0);
@@ -208,6 +223,7 @@ const Audit = () => {
         .single();
       if (cancelled) return;
       if (profileError) throw profileError;
+      const loadedTier = normalizePlanTier((profileData as { plan_tier?: string | null } | null)?.plan_tier);
       if (profileData) {
         const typedProfile = profileData as AuditProfile & { plan_tier?: string | null };
         setProfile({
@@ -216,6 +232,26 @@ const Audit = () => {
           intent_profile: null,
         });
         setPlanTier(normalizePlanTier(typedProfile.plan_tier));
+      }
+
+      // A completed audit takes precedence: the lifecycle trigger refuses to
+      // complete a second audit while one is completed/archived, so a stray
+      // in-progress row (another tab, legacy data) could never be finished.
+      const { data: completedAudit, error: completedError } = await supabase
+        .from("baseline_audits")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("status", "completed")
+        .limit(1);
+
+      if (cancelled) return;
+      if (completedError) throw completedError;
+      if (completedAudit && completedAudit.length > 0) {
+        setCompleted(true);
+        setMessages([{ role: "system", text: loadedTier === "premium" || loadedTier === "coach"
+          ? "✅ Your operating audit is already complete. View your report or start a fresh assessment."
+          : "✅ Your operating audit is already complete. View your report below." }]);
+        return;
       }
 
       // Check for existing in-progress audit
@@ -251,22 +287,6 @@ const Audit = () => {
         setCurrentQ(answeredCount);
         setMessages(msgs);
       } else {
-        // Check for completed audit
-        const { data: completedAudit, error: completedError } = await supabase
-          .from("baseline_audits")
-          .select("id")
-          .eq("user_id", user.id)
-          .eq("status", "completed")
-          .limit(1);
-
-        if (cancelled) return;
-        if (completedError) throw completedError;
-        if (completedAudit && completedAudit.length > 0) {
-          setCompleted(true);
-          setMessages([{ role: "system", text: "✅ Your operating audit is already complete. View your report or start a fresh assessment." }]);
-          return;
-        }
-
         // Create new audit
         const { data: newAudit, error: createError } = await supabase
           .from("baseline_audits")
@@ -328,7 +348,18 @@ const Audit = () => {
 
     if (saveError || savedAudit?.id !== auditId) {
       setInput(answer);
-      toast({ title: "Answer not saved", description: saveError?.message || "Audit update was not acknowledged", variant: "destructive" });
+      // The lifecycle trigger rejects writes to an audit that is already
+      // completed/archived (e.g. finished in another tab). Retrying can never
+      // succeed, so reload to show the audit's real state instead of looping.
+      const lifecycleRejected = /Completed audits are server managed|A completed audit exists/.test(saveError?.message ?? "");
+      toast({
+        title: "Answer not saved",
+        description: lifecycleRejected
+          ? "This audit was already completed elsewhere. Reloading its current state."
+          : saveError?.message || "Audit update was not acknowledged",
+        variant: "destructive",
+      });
+      if (lifecycleRejected) setInitAttempt((n) => n + 1);
       return;
     }
     setMessages((prev) => [...prev, { role: "user", text: answer }]);
@@ -539,54 +570,45 @@ const Audit = () => {
     await processAnswer(String(n));
   };
 
+  // Starting over goes through the same server-enforced re-audit workflow as the
+  // report page: Premium/Coach only, 30-day cooldown, prior audit + report archived
+  // to history. A direct status flip would bypass all three and leave the old
+  // report in place for the new audit.
   const handleStartFresh = async () => {
-    if (!user) return;
+    if (!user || startFreshFlight.current) return;
+    startFreshFlight.current = true;
+    setStartingFresh(true);
     try {
-      // Archive prior completed audits
-      await supabase
-        .from("baseline_audits")
-        .update({ status: "archived" as never })
-        .eq("user_id", user.id)
-        .eq("status", "completed");
+      const eligibility = await canReaudit(user.id);
+      if (!eligibility.eligible) {
+        toast({
+          title: "Re-audit not available",
+          description: eligibility.nextEligibleDate
+            ? `${eligibility.reason ?? ""} Next available ${format(eligibility.nextEligibleDate, "MMM d")}.`.trim()
+            : eligibility.reason ?? "Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+      await archiveAndResetAudit(user.id);
 
-      // Reset local state
+      // Reset local state; the loader creates the new in-progress audit.
       setCompleted(false);
       setAuditId(null);
       setCurrentQ(0);
       setMessages([]);
       setResponses({});
       setInput("");
-
-      // Create a new audit
-      const { data: newAudit, error } = await supabase
-        .from("baseline_audits")
-        .insert({ user_id: user.id })
-        .select()
-        .single();
-
-      if (error || !newAudit) {
-        toast({
-          title: "Couldn't start a fresh assessment",
-          description: error?.message ?? "Please try again.",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      setAuditId(newAudit.id);
-      setMessages([
-        {
-          role: "system",
-          text: "Before you start: do this when you can be fully present. We begin by getting oriented, then pressure-test reality, then go after blind spots, then force prioritization. Honest, thoughtful answers are what make that progression useful.",
-        },
-        { role: "system", text: AUDIT_QUESTIONS[0].text },
-      ]);
+      setInitAttempt((n) => n + 1);
     } catch (err) {
       toast({
         title: "Couldn't start a fresh assessment",
         description: err instanceof Error ? err.message : "Please try again.",
         variant: "destructive",
       });
+    } finally {
+      startFreshFlight.current = false;
+      setStartingFresh(false);
     }
   };
 
@@ -713,9 +735,27 @@ const Audit = () => {
                   View your Operating Report <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
               )}
-              <Button variant="outline" className="w-full" onClick={handleStartFresh}>
-                Start Fresh Assessment
-              </Button>
+              {(planTier === "premium" || planTier === "coach") && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline" className="w-full" disabled={startingFresh}>
+                      {startingFresh ? "Archiving…" : "Start Fresh Assessment"}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Archive this audit and start fresh?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Your current audit and report will be saved to your history and you will begin a new audit. Re-audits are available once every 30 days. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={handleStartFresh}>Yes, start re-audit</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
             </div>
           ) : coachStreaming ? (
             <div className="flex items-center justify-center py-2">
@@ -751,7 +791,7 @@ const Audit = () => {
                     placeholder="Answer directly. Specific beats polished..."
                     className="flex-1"
                   />
-                  <Button onClick={handleSend} disabled={!input.trim()} variant="hero" size="icon">
+                  <Button onClick={handleSend} disabled={!input.trim()} variant="hero" size="icon" aria-label="Send answer">
                     <Send className="h-4 w-4" />
                   </Button>
                 </>

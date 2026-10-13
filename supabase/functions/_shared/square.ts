@@ -21,3 +21,16 @@ export function recurringCheckout(c: SquareConfig, id: string) {
 export function paidSubscription(c: SquareConfig, subscription: any, invoice: any, order: any, payment: any): boolean {
   return subscription?.plan_variation_id === c.variation && subscription.location_id === c.location && subscription.status === 'ACTIVE' && (!subscription.price_override_money || moneyMatches(subscription.price_override_money)) && invoice?.subscription_id === subscription.id && subscription.invoice_ids?.[0] === invoice.id && invoice.status === 'PAID' && invoice.order_id === order?.id && order.location_id === c.location && payment?.order_id === order.id && payment.location_id === c.location && payment.status === 'COMPLETED' && moneyMatches(payment.amount_money) && !(payment.refunded_money?.amount > 0) && moneyMatches(order.total_money) && payment.customer_id === subscription.customer_id;
 }
+
+/** Stops future Square billing for each bound subscription before account deletion.
+ * Already canceled/deactivated or cancel-scheduled subscriptions are left as-is.
+ * Any lookup/cancel failure throws so the caller can abort deletion (retryable). */
+export async function cancelSquareSubscriptions(ids: string[], request: (path: string, body?: unknown) => Promise<any>): Promise<void> {
+  for (const id of ids) {
+    const sub = (await request(`/subscriptions/${encodeURIComponent(id)}`))?.subscription;
+    if (!sub || sub.id !== id) throw new Error('Square subscription lookup failed');
+    if (sub.status === 'CANCELED' || sub.status === 'DEACTIVATED' || sub.canceled_date) continue;
+    const result = await request(`/subscriptions/${encodeURIComponent(id)}/cancel`, {});
+    if (result?.subscription?.id !== id) throw new Error('Square subscription cancel not acknowledged');
+  }
+}

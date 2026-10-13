@@ -145,24 +145,52 @@ serve(async (req) => {
     const tone = profileRow?.coaching_tone || "balanced";
 
     // ── Load all data in parallel ─────────────────────────────────────────
-    const [reportsRes, auditsRes] = await Promise.all([
+    // archive_and_reset_audit() snapshots each prior report into
+    // audit_history.report_data and then DELETES strategic_reports, so the
+    // live table never holds more than the current cycle. Prior cycles must
+    // come from the archive (the same source Report.tsx counts).
+    const [reportsRes, historyRes] = await Promise.all([
       anonClient
         .from("strategic_reports")
         .select(
-          "id, north_star_focus, ninety_day_plan, pattern_analysis, forced_choice, created_at",
+          "id, north_star_focus, ninety_day_plan, pattern_analysis, forced_choice, contradictions, created_at",
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: true }),
 
       anonClient
-        .from("baseline_audits")
-        .select("id, responses, scores, status, created_at")
+        .from("audit_history")
+        .select("audit_number, report_data, completed_at")
         .eq("user_id", user.id)
-        .order("created_at", { ascending: true }),
+        .order("audit_number", { ascending: true }),
     ]);
+    if (reportsRes.error || historyRes.error) throw new Error("Failed to load audit cycles");
 
-    const reports = reportsRes.data || [];
-    const audits = auditsRes.data || [];
+    type CycleReport = {
+      id?: string;
+      north_star_focus?: unknown;
+      pattern_analysis?: unknown;
+      forced_choice?: unknown;
+      contradictions?: unknown;
+      created_at: string;
+    };
+    const archivedReports: CycleReport[] = (historyRes.data || []).flatMap((row) => {
+      const data = row.report_data;
+      if (!data || typeof data !== "object" || Array.isArray(data)) return [];
+      const snapshot = data as Record<string, unknown>;
+      const createdAt = typeof snapshot.created_at === "string" ? snapshot.created_at : row.completed_at;
+      return [{ ...snapshot, created_at: createdAt } as CycleReport];
+    });
+    const seen = new Set<string>();
+    // Bound prompt size: the most recent 8 cycles, oldest first.
+    const reports: CycleReport[] = [...archivedReports, ...((reportsRes.data || []) as CycleReport[])]
+      .filter((report) => {
+        if (typeof report.id !== "string") return true;
+        if (seen.has(report.id)) return false;
+        seen.add(report.id);
+        return true;
+      })
+      .slice(-8);
 
     // ── Insufficient data guard ───────────────────────────────────────────
     if (reports.length < 2) {
@@ -180,11 +208,6 @@ serve(async (req) => {
     const cycleSummaries = reports.map((report, index) => {
       const cycleNumber = index + 1;
       const reportDate = new Date(report.created_at).toISOString().split("T")[0];
-
-      // Match audit by proximity (closest completed audit before or on the report date)
-      const matchedAudit = audits
-        .filter((a) => a.status === "completed" && a.created_at <= report.created_at)
-        .slice(-1)[0];
 
       const patternAnalysis = report.pattern_analysis && typeof report.pattern_analysis === "object"
         ? report.pattern_analysis as Record<string, unknown>
@@ -214,7 +237,6 @@ serve(async (req) => {
         blind_spots: blindSpots,
         strengths,
         contradictions_count: contradictionCount,
-        has_audit_data: !!matchedAudit,
       };
     });
 
@@ -415,9 +437,9 @@ ${cyclesText}`;
   } catch (e) {
     const limited = limitErrorResponse(e, corsHeaders);
     if (limited) return limited;
-    console.error("pattern-intelligence request failed");
+    console.error("pattern-intelligence request failed:", e);
     return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
+      JSON.stringify({ error: "Pattern analysis failed. Please try again." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }

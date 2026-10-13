@@ -361,6 +361,7 @@ const NorthStarGoals = () => {
                                 size="icon"
                                 className="h-7 w-7 text-muted-foreground hover:text-foreground"
                                 onClick={() => startEdit(goal)}
+                                aria-label={`Edit goal: ${goal.title}`}
                               >
                                 <Pencil className="h-3.5 w-3.5" />
                               </Button>
@@ -369,6 +370,7 @@ const NorthStarGoals = () => {
                                 size="icon"
                                 className="h-7 w-7 text-muted-foreground hover:text-destructive"
                                 onClick={() => setPendingDeleteId(goal.id)}
+                                aria-label={`Delete goal: ${goal.title}`}
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </Button>

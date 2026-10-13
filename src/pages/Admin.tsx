@@ -132,10 +132,15 @@ const Admin = () => {
   };
 
   const toggleActive = async (userId: string, currentActive: boolean) => {
-    await supabase
+    // RLS turns an unauthorized update into zero rows, not an error: confirm the row changed.
+    const { data, error } = await supabase
       .from("profiles")
       .update({ is_active: !currentActive })
-      .eq("user_id", userId);
+      .eq("user_id", userId)
+      .select("user_id");
+    if (error || !data?.length) {
+      toast({ title: currentActive ? "Deactivation failed" : "Reactivation failed", description: error?.message || "The account status was not changed.", variant: "destructive" });
+    }
     fetchUsers();
   };
 

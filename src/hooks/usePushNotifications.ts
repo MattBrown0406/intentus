@@ -3,6 +3,18 @@ import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth, registerSignOutCleanup, bounded } from "@/contexts/AuthContext";
 
+// register_push_token also unbinds this device token from any previous account, so
+// a shared device stops receiving the last user's pushes. Until that migration is
+// live (PGRST202: function not found) fall back to the owner-scoped upsert.
+const rpc = supabase.rpc.bind(supabase) as unknown as (
+  name: "register_push_token", args: { p_token: string; p_platform: string }
+) => PromiseLike<{ error: { code?: string; message: string } | null }>;
+export async function registerPushToken(userId: string, token: string, platform: string) {
+  const { error } = await bounded(rpc("register_push_token", { p_token: token, p_platform: platform }));
+  if (error?.code !== "PGRST202") return { error };
+  return bounded(supabase.from("push_tokens").upsert({ user_id: userId, token, platform }, { onConflict: "user_id,token" }));
+}
+
 export function usePushNotifications() {
   const { user } = useAuth();
   useEffect(() => {
@@ -39,7 +51,7 @@ export function usePushNotifications() {
           tokens.add(token.value);
           try { localStorage.setItem(storageKey, token.value); } catch { /* memory fallback */ }
           const write = (async () => {
-            const { error } = await bounded(supabase.from("push_tokens").upsert({ user_id: user.id, token: token.value, platform: Capacitor.getPlatform() }, { onConflict: "user_id,token" }));
+            const { error } = await registerPushToken(user.id, token.value, Capacitor.getPlatform());
             if (error) console.error("Push token persistence failed");
           })().catch(() => { console.error("Push token persistence failed"); });
           writes.add(write); void write.finally(() => writes.delete(write));

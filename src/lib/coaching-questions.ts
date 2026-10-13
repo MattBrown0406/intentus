@@ -172,15 +172,14 @@ export function selectQuestionsForCheckIn(
   }
   // If the resulting group matches a recent group, swap the last pick with
   // the next-staleest unpicked candidate.
-  let attempt = 0;
-  while (
-    recentGroupKeys.has([...pickedIds].sort().join("|")) &&
-    attempt < ROTATING_QUESTION_IDS.length
-  ) {
-    const swapIn = scored.find((s) => !pickedIds.includes(s.id));
+  // Track every id already tried so the swap walks forward through the
+  // candidates instead of oscillating back to the one it just removed.
+  const tried = new Set(pickedIds);
+  while (pickedIds.length > 0 && recentGroupKeys.has([...pickedIds].sort().join("|"))) {
+    const swapIn = scored.find((s) => !tried.has(s.id));
     if (!swapIn) break;
+    tried.add(swapIn.id);
     pickedIds[pickedIds.length - 1] = swapIn.id;
-    attempt++;
   }
 
   const rotating = COACHING_QUESTIONS.filter((q) => pickedIds.includes(q.id));

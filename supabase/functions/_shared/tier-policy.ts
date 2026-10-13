@@ -1,7 +1,10 @@
 export type PlanTier = "free" | "pro" | "premium" | "coach";
 
 export function normalizePlanTier(value: unknown): PlanTier {
-  return value === "pro" || value === "premium" || value === "coach" ? value : "free";
+  // The database Executive tier is `exec` (legacy rows may still say `pro`);
+  // edge prompts use "pro" as the internal Executive label.
+  if (value === "exec" || value === "pro") return "pro";
+  return value === "premium" || value === "coach" ? value : "free";
 }
 
 export function canUseAiChat(tier: PlanTier) {

@@ -288,7 +288,7 @@ const Coaching = () => {
       <nav className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
         <div className="container mx-auto flex items-center justify-between h-14 px-4">
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")}>
+            <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")} aria-label="Back to dashboard">
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <div className="flex items-center">
@@ -450,7 +450,7 @@ const Coaching = () => {
               disabled={isStreaming || historyLoading || historyError || profileLoading || !tierCapability.canUseAiChat}
               className="flex-1"
             />
-            <Button type="submit" variant="hero" size="icon" disabled={isStreaming || historyLoading || historyError || !input.trim() || profileLoading || !tierCapability.canUseAiChat}>
+            <Button type="submit" variant="hero" size="icon" aria-label="Send message" disabled={isStreaming || historyLoading || historyError || !input.trim() || profileLoading || !tierCapability.canUseAiChat}>
               <Send className="h-4 w-4" />
             </Button>
           </form>

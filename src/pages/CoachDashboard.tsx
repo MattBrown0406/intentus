@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import AppBreadcrumb from "@/components/AppBreadcrumb";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { publicOrigin } from "@/lib/site";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { brandLogo as logo } from "@/lib/brand";
@@ -98,28 +99,30 @@ const CoachDashboard = () => {
     if (clientsRes.data && clientsRes.data.length > 0) {
       const clientIds = clientsRes.data.map((c: any) => c.client_user_id);
 
+      // One bulk check_ins read is capped by PostgREST's row limit, which silently
+      // zeroed counts and flagged active clients as inactive. Count per client.
       const [profilesRes, auditsRes, reportsRes, checkInsRes] = await Promise.all([
         supabase.from("profiles").select("user_id, display_name, onboarding_completed, plan_tier").in("user_id", clientIds),
         supabase.from("baseline_audits").select("user_id, status").in("user_id", clientIds),
         supabase.from("strategic_reports").select("user_id").in("user_id", clientIds),
-        supabase.from("check_ins").select("user_id, created_at").in("user_id", clientIds).order("created_at", { ascending: false }),
+        Promise.all(clientIds.map((id: string) => supabase.from("check_ins").select("created_at", { count: "exact" }).eq("user_id", id).order("created_at", { ascending: false }).limit(1))),
       ]);
 
       if (!live()) return;
-      for (const result of [profilesRes, auditsRes, reportsRes, checkInsRes]) if (result.error) throw result.error;
-      const enriched: Client[] = clientsRes.data.map((c: any) => {
+      for (const result of [profilesRes, auditsRes, reportsRes, ...checkInsRes]) if (result.error) throw result.error;
+      const enriched: Client[] = clientsRes.data.map((c: any, index: number) => {
         const prof = profilesRes.data?.find((p: any) => p.user_id === c.client_user_id);
         const audit = auditsRes.data?.find((a: any) => a.user_id === c.client_user_id);
         const hasReport = reportsRes.data?.some((r: any) => r.user_id === c.client_user_id);
-        const clientCheckIns = checkInsRes.data?.filter((ci: any) => ci.user_id === c.client_user_id) ?? [];
+        const clientCheckIns = checkInsRes[index];
 
         return {
           ...c,
           profile: prof ? { display_name: prof.display_name, onboarding_completed: prof.onboarding_completed, plan_tier: prof.plan_tier } : undefined,
           audit_status: audit?.status ?? null,
           has_report: hasReport ?? false,
-          last_check_in: clientCheckIns[0]?.created_at ?? null,
-          check_in_count: clientCheckIns.length,
+          last_check_in: clientCheckIns.data?.[0]?.created_at ?? null,
+          check_in_count: clientCheckIns.count ?? 0,
         };
       });
 
@@ -158,7 +161,7 @@ const CoachDashboard = () => {
   const deleteLink = (id: string) => runAction(() => coachRpc("coach_delete_invite", { p_link_id: id }), "Invite link deleted");
   const updateClientTier = (id: string, tier: string) => runAction(() => coachRpc("coach_update_client_tier", { p_relationship_id: id, p_tier: tier }), "Tier updated");
   const copyLink = (code: string) => runAction(async () => {
-    await navigator.clipboard.writeText(`${window.location.origin}/auth?invite=${encodeURIComponent(code)}`);
+    await navigator.clipboard.writeText(`${publicOrigin()}/auth?invite=${encodeURIComponent(code)}`);
   }, "Invite link copied to clipboard", false);
 
   const tierDistribution = [

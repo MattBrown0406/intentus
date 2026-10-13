@@ -22,6 +22,11 @@ export function boundedArray<T>(value: unknown, maxItems: number): T[] {
   return Array.isArray(value) ? value.slice(0, maxItems) as T[] : [];
 }
 
+/** Keeps the most recent items (chat history is oldest-first). */
+export function boundedTail<T>(value: unknown, maxItems: number): T[] {
+  return Array.isArray(value) ? value.slice(-maxItems) as T[] : [];
+}
+
 export function safeJsonStringify(value: unknown, maxLength = 4000) {
   try {
     return truncate(JSON.stringify(value), maxLength, "");

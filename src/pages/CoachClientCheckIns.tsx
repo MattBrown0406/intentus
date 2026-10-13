@@ -54,12 +54,13 @@ const CoachClientCheckIns = () => {
     );
   }
 
-  const avgMood = checkIns.length > 0
-    ? (checkIns.reduce((a, c) => a + (c.mood_score ?? 0), 0) / checkIns.filter(c => c.mood_score).length).toFixed(1)
-    : "—";
-  const avgEnergy = checkIns.length > 0
-    ? (checkIns.reduce((a, c) => a + (c.energy_score ?? 0), 0) / checkIns.filter(c => c.energy_score).length).toFixed(1)
-    : "—";
+  // Quick check-ins omit scores; an all-unscored history must not render "NaN".
+  const average = (scores: (number | null)[]) => {
+    const scored = scores.filter((score): score is number => typeof score === "number");
+    return scored.length > 0 ? (scored.reduce((a, b) => a + b, 0) / scored.length).toFixed(1) : "—";
+  };
+  const avgMood = average(checkIns.map(c => c.mood_score));
+  const avgEnergy = average(checkIns.map(c => c.energy_score));
   const driftCount = checkIns.filter(c => c.drift_detected).length;
 
   return (

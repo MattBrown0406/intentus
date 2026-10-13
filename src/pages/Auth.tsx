@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { brandLogo as logo } from "@/lib/brand";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth, bounded, safeDestination } from "@/contexts/AuthContext";
+import { publicOrigin } from "@/lib/site";
 import { useLocation } from "react-router-dom";
 import Seo from "@/components/seo/Seo";
 
@@ -38,7 +39,7 @@ const Auth = () => {
     setLoading(true);
     try {
       if (showReset) {
-        const { error } = await bounded(supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` }));
+        const { error } = await bounded(supabase.auth.resetPasswordForEmail(email, { redirectTo: `${publicOrigin()}/reset-password` }));
         if (error) throw error;
         toast({ title: "Check your email", description: "We sent you a password reset link." });
         setShowReset(false);
@@ -47,7 +48,7 @@ const Auth = () => {
         if (error) throw error;
       } else {
         const { data, error } = await bounded(supabase.auth.signUp({ email, password, options: {
-          data: { display_name: displayName, invite_code: inviteCode || undefined }, emailRedirectTo: `${window.location.origin}/auth`,
+          data: { display_name: displayName, invite_code: inviteCode || undefined }, emailRedirectTo: `${publicOrigin()}/auth`,
         } }));
         if (error) throw error;
         if (!data.session) toast({ title: "Check your email", description: "Confirm your email, then sign in to finish linking your coach." });

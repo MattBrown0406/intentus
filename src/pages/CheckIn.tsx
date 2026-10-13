@@ -91,14 +91,14 @@ const ListInput = ({ label, helper, examples, items, onAdd, onRemove, inputVal, 
         placeholder={placeholder}
         className="flex-1 min-h-[90px] text-sm resize-none"
       />
-      <Button variant="outline" size="icon" onClick={onAdd}><Plus className="h-4 w-4" /></Button>
+      <Button variant="outline" size="icon" onClick={onAdd} aria-label="Add item"><Plus className="h-4 w-4" /></Button>
     </div>
     <p className="text-xs text-muted-foreground -mt-2"><span className="hidden sm:inline">Aim for a full sentence with context. Press <kbd className="px-1.5 py-0.5 rounded border border-border bg-muted text-[10px]">⌘/Ctrl + Enter</kbd> or click + to add.</span><span className="sm:hidden">Tap + to add. Aim for a full sentence with context.</span></p>
     <ul className="space-y-2">
       {items.map((item, i) => (
         <li key={i} className="flex items-start gap-2 bg-card border border-border rounded-lg px-3 py-2 text-sm text-foreground">
           <span className="flex-1 whitespace-pre-wrap">{item}</span>
-          <button onClick={() => onRemove(i)}><X className="h-4 w-4 text-muted-foreground hover:text-destructive" /></button>
+          <button type="button" onClick={() => onRemove(i)} aria-label={`Remove item ${i + 1}`}><X className="h-4 w-4 text-muted-foreground hover:text-destructive" /></button>
         </li>
       ))}
     </ul>
@@ -235,6 +235,13 @@ const loadDraft = (userId: string): CheckInDraft | null => {
   }
 };
 
+// save_check_in raises this (SQLSTATE 22023) when the operation id was already
+// committed by an earlier attempt whose response was lost, but the payload has
+// since been edited. The check-in exists; only the later edits were not applied.
+const ALREADY_SAVED_MESSAGE = "Operation already saved with different content";
+const isAlreadySavedCheckIn = (error: { message?: string } | null | undefined) =>
+  typeof error?.message === "string" && error.message.includes(ALREADY_SAVED_MESSAGE);
+
 // ── Main Component ───────────────────────────────────────────────────────────
 const CheckInForm = () => {
   const { user } = useAuth();
@@ -310,6 +317,8 @@ const CheckInForm = () => {
       const recentGroups = extractRecentGroups(recentCheckIns);
       const selected = selectQuestionsForCheckIn(userTier, recency, recentGroups);
       setExtraQuestions(selected);
+      // A restored draft may sit on the extras step (7) when this tier has none.
+      if (selected.length === 0) setStep((s) => Math.min(s, 6));
     };
     loadProfileAndExtras();
   }, [user]);
@@ -318,17 +327,19 @@ const CheckInForm = () => {
     if (!user) return;
     const checkPrevious = async () => {
       const prev = await getPreviousWeekCommitment(user.id);
-      if (prev) {
+      // Only ask about follow-through once: a prior commitment whose outcome is
+      // already recorded (e.g. a second check-in this week) needs no callback.
+      if (prev && !prev.outcome) {
         setPreviousCommitment(prev);
         setHasPreviousCommitment(true);
       } else {
         setHasPreviousCommitment(false);
-        // Skip step 0 — jump to step 1 (unless a draft already restored a later step)
-        if (!initialDraft) setStep(1);
+        // Skip step 0. A restored draft keeps a later step, but never the
+        // callback step: with no callback it renders nothing and blocks Continue.
+        setStep((s) => (s === 0 ? 1 : s));
       }
     };
     checkPrevious();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   // Auto-save draft on any change
@@ -372,6 +383,15 @@ const CheckInForm = () => {
       .split(/\s+/)
       .filter(Boolean).length;
     return totalItems < 3 || totalWords < 12;
+  };
+
+  // Text typed into a list step but not yet added with "+" must not be lost
+  // when the user moves on.
+  const commitPendingInput = () => {
+    const pending = inputVal.trim();
+    const setter = step === 3 ? setWins : step === 4 ? setBlockers : step === 5 ? setCommitments : null;
+    if (pending && setter) setter((prev) => [...prev, pending]);
+    setInputVal("");
   };
 
   const addItem = (setter: typeof setWins) => {
@@ -460,10 +480,11 @@ const CheckInForm = () => {
       else if (typeof v === "number" && v > 0) cleanedExtras[k] = v;
     }
 
+    let alreadySaved = false;
     try {
       const rpc = supabase.rpc.bind(supabase) as unknown as (
         name: "save_check_in", args: { p_operation_id: string; p_payload: Json }
-      ) => PromiseLike<{ data: string | null; error: { message: string } | null }>;
+      ) => PromiseLike<{ data: string | null; error: { message: string; code?: string } | null }>;
       const { data, error } = await rpc("save_check_in", {
         p_operation_id: operationId,
         p_payload: {
@@ -475,15 +496,27 @@ const CheckInForm = () => {
           reflection: callbackReflection,
         },
       });
-      if (error || !data) throw new Error(error?.message ?? "No save acknowledgement received.");
+      if (isAlreadySavedCheckIn(error)) alreadySaved = true;
+      else if (error || !data) throw new Error(error?.message ?? "No save acknowledgement received.");
     } catch (error) {
       setLoading(false);
       toast({ title: "Not saved — retry safely", description: error instanceof Error ? error.message : "Save failed. Your draft is retained.", variant: "destructive" });
       return;
     }
     setLoading(false);
-    setSaveWarning("");
+    // Retire the draft and its operation id exactly as on a normal success, so
+    // no later retry can collide with the already-committed operation.
     try { localStorage.removeItem(draftKey); } catch { /* ignore */ }
+    setOperationId(crypto.randomUUID());
+    if (alreadySaved) {
+      setSaveWarning("your most recent edits weren't applied because an earlier attempt had already saved it.");
+      toast({
+        title: "Check-in saved",
+        description: "An earlier attempt already saved this check-in. Your most recent edits weren't applied.",
+      });
+    } else {
+      setSaveWarning("");
+    }
     setDone(true);
     // Quick check-ins skip the AI debrief.
     if (!isQuick && getTierCapability(tier).canUseAiDebrief) streamDebrief();
@@ -951,14 +984,14 @@ const CheckInForm = () => {
       <div className="border-t border-border bg-card/50 backdrop-blur-sm p-4">
         <div className="container mx-auto max-w-lg flex gap-3">
           {step > firstStep && (
-            <Button variant="outline" className="flex-1" onClick={() => { setInputVal(""); setStep(step - 1); }}>Back</Button>
+            <Button variant="outline" className="flex-1" onClick={() => { commitPendingInput(); setStep(step - 1); }}>Back</Button>
           )}
           {step < LAST_STEP ? (
             <Button
               variant="hero"
               className="flex-1"
               disabled={!canAdvanceStep0}
-              onClick={() => { setInputVal(""); setStep(step + 1); }}
+              onClick={() => { commitPendingInput(); setStep(step + 1); }}
             >
               Continue <ArrowRight className="ml-2 h-4 w-4" />
             </Button>

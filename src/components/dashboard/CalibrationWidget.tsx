@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Target, TrendingUp, TrendingDown, Minus } from "lucide-react";
-import { format, startOfWeek } from "date-fns";
+import { format, parseISO, startOfWeek } from "date-fns";
 
 interface CalibrationWidgetProps {
   userId: string;
@@ -86,7 +86,9 @@ export const CalibrationWidget = ({ userId }: CalibrationWidgetProps) => {
           const outcome = outcomeByWeek.get(wkStart) ?? null;
           return {
             weekStart: wkStart,
-            weekLabel: format(new Date(wkStart), "MMM d"),
+            // parseISO keeps a date-only week start on the local calendar day;
+            // new Date("yyyy-MM-dd") is UTC midnight and shows Sunday west of UTC.
+            weekLabel: format(parseISO(wkStart), "MMM d"),
             selfTrust: avg(b.selfTrust),
             confidence: avg(b.confidence),
             outcomeRaw: outcome,

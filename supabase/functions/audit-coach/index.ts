@@ -150,7 +150,7 @@ Your job: explain this question to them in plain, grounded language. Cover (1) w
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gemini-2.5-flash-preview-04-17",
+        model: "gemini-2.5-flash",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
@@ -181,8 +181,8 @@ Your job: explain this question to them in plain, grounded language. Cover (1) w
   } catch (e) {
     const limited = limitErrorResponse(e, corsHeaders);
     if (limited) return limited;
-    console.error("audit-coach request failed");
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+    console.error("audit-coach request failed:", e);
+    return new Response(JSON.stringify({ error: "Audit coaching is temporarily unavailable. Please try again." }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }

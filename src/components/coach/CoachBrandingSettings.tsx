@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { coachSlugError } from "@/lib/coach-slug";
 import {
   Palette, Upload, Globe, Wand2, Copy, Eye, Image, User
 } from "lucide-react";
@@ -143,8 +144,9 @@ const CoachBrandingSettings = () => {
 
   const saveBranding = async () => {
     if (!user) return;
-    if (!slug.match(/^[a-z0-9-]+$/)) {
-      toast({ title: "Invalid URL slug", description: "Use only lowercase letters, numbers, and hyphens.", variant: "destructive" });
+    const slugError = coachSlugError(slug);
+    if (slugError) {
+      toast({ title: "Invalid URL slug", description: slugError, variant: "destructive" });
       return;
     }
     setSaving(true);

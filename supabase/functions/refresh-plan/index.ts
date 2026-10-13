@@ -80,7 +80,19 @@ serve(async (req) => {
       });
     }
 
-    await readBoundedJson(req, { allowEmpty: true });
+    const body = await readBoundedJson(req, { allowEmpty: true });
+    // Report.tsx sends the report it is displaying; refresh exactly that one.
+    const requestedReportId = body.reportId ?? body.report_id;
+    if (
+      requestedReportId !== undefined &&
+      (typeof requestedReportId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedReportId))
+    ) {
+      return new Response(JSON.stringify({ error: "Invalid reportId" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // Service-role client for the UPDATE write
     const serviceClient = createClient(supabaseUrl, supabaseServiceKey);
@@ -108,15 +120,16 @@ serve(async (req) => {
 
     // ── Load data in parallel ─────────────────────────────────────────────
     const [reportRes, checkInsRes, commitmentsRes] = await Promise.all([
-      anonClient
-        .from("strategic_reports")
-        .select(
-          "id, north_star_focus, ninety_day_plan, pattern_analysis, forced_choice, intent_model, created_at",
-        )
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single(),
+      (() => {
+        let query = anonClient
+          .from("strategic_reports")
+          .select(
+            "id, north_star_focus, ninety_day_plan, pattern_analysis, forced_choice, intent_model, created_at",
+          )
+          .eq("user_id", user.id);
+        if (requestedReportId) query = query.eq("id", requestedReportId);
+        return query.order("created_at", { ascending: false }).limit(1).maybeSingle();
+      })(),
 
       anonClient
         .from("check_ins")
@@ -135,6 +148,7 @@ serve(async (req) => {
         .limit(8),
     ]);
 
+    if (reportRes.error) throw new Error("Failed to load strategic report");
     const report = reportRes.data;
     if (!report) {
       return new Response(
@@ -328,17 +342,19 @@ Rules:
     }
 
     // ── Persist to DB ─────────────────────────────────────────────────────
-    const { error: updateError } = await serviceClient
+    const { data: saved, error: updateError } = await serviceClient
       .from("strategic_reports")
       .update({
-        edited_ninety_day_plan: { phases: refreshedPhases },
+        // Same shape Report.tsx reads and writes: a bare array of phases.
+        edited_ninety_day_plan: refreshedPhases,
         last_edited_at: new Date().toISOString(),
         last_edited_by: user.id,
       })
       .eq("id", report.id)
-      .eq("user_id", user.id);
+      .eq("user_id", user.id)
+      .select("id");
 
-    if (updateError) {
+    if (updateError || saved?.length !== 1) {
       console.error("DB update failed");
       throw new Error("Failed to save refreshed plan");
     }
@@ -355,9 +371,9 @@ Rules:
   } catch (e) {
     const limited = limitErrorResponse(e, corsHeaders);
     if (limited) return limited;
-    console.error("refresh-plan request failed");
+    console.error("refresh-plan request failed:", e);
     return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
+      JSON.stringify({ error: "Plan refresh failed. Please try again." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }

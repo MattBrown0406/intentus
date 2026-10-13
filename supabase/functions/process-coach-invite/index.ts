@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
+import { readBoundedJson, limitErrorResponse, RequestLimitError } from "../_shared/request-limits.ts";
 
 
 
@@ -45,7 +46,7 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    const { invite_code, coach_user_id } = await req.json();
+    const { invite_code, coach_user_id } = await readBoundedJson(req, { maxBytes: 8192 });
     if ((invite_code != null && (typeof invite_code !== "string" || invite_code.length > 200)) ||
         (coach_user_id != null && (typeof coach_user_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(coach_user_id)))) {
       return new Response(JSON.stringify({ error: "Invalid invitation" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -66,8 +67,10 @@ serve(async (req) => {
       status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
+    const limited = error instanceof RequestLimitError ? limitErrorResponse(error, corsHeaders) : null;
+    if (limited) return limited;
     console.error("Process invite error:", error);
-    return new Response(JSON.stringify({ error: (error as Error).message }), {
+    return new Response(JSON.stringify({ error: "Invitation could not be processed. Please retry." }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

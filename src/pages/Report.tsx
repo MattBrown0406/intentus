@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppBreadcrumb from "@/components/AppBreadcrumb";
 import { supabase } from "@/integrations/supabase/client";
+import type { Json } from "@/integrations/supabase/types";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -17,6 +18,7 @@ import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card";
 import { brandLogo as logo } from "@/lib/brand";
 import { formatLensLabel, type IntentModel } from "@/lib/intentus-architecture";
 import { canReaudit, archiveAndResetAudit, getAuditHistory, type AuditHistoryEntry } from "@/lib/reaudit";
+import { needsReportForAudit, normalizeContradictions, normalizeEditedPlan, normalizePatternAnalysis, usablePatternIntel } from "@/lib/report-data";
 import { format } from "date-fns";
 
 interface PatternAnalysis {
@@ -44,6 +46,7 @@ interface NinetyDayPlan {
 
 interface StrategicReport {
   id: string;
+  audit_id?: string | null;
   created_at: string;
   pattern_analysis: PatternAnalysis;
   contradictions: Contradiction[];
@@ -103,30 +106,34 @@ const Report = () => {
         return;
       }
 
-      // Load latest report
-      const { data } = await supabase
-        .from("strategic_reports")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(1);
+      // Load latest report and the newest completed audit together: a newer
+      // completed audit without its own report must not keep showing the old one.
+      const [{ data }, { data: audit }] = await Promise.all([
+        supabase
+          .from("strategic_reports")
+          .select("*")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(1),
+        supabase
+          .from("baseline_audits")
+          .select("id")
+          .eq("user_id", user.id)
+          .eq("status", "completed")
+          .order("created_at", { ascending: false })
+          .limit(1),
+      ]);
+      const latestReport = (data?.[0] ?? null) as unknown as StrategicReport | null;
 
-      if (data && data.length > 0) {
-        setReport(data[0] as unknown as StrategicReport);
+      if (latestReport && !needsReportForAudit(latestReport, audit?.[0])) {
+        setReport(latestReport);
         setLoading(false);
         return;
       }
 
-      // No report exists — try to generate one
-      const { data: audit } = await supabase
-        .from("baseline_audits")
-        .select("id")
-        .eq("user_id", user.id)
-        .eq("status", "completed")
-        .order("created_at", { ascending: false })
-        .limit(1);
-
       if (audit && audit.length > 0) {
+        // Keep the previous report as a fallback if generation fails.
+        if (latestReport) setReport(latestReport);
         setGenerating(true);
         setLoading(false);
         try {
@@ -209,8 +216,9 @@ const Report = () => {
   useEffect(() => {
     loadCompletions();
     // Load edited plan if exists
-    if (report?.edited_ninety_day_plan) {
-      setEditedPlan(report.edited_ninety_day_plan as any[]);
+    const edited = normalizeEditedPlan(report?.edited_ninety_day_plan);
+    if (edited) {
+      setEditedPlan(edited);
     }
   }, [loadCompletions, report]);
 
@@ -294,8 +302,9 @@ const Report = () => {
         body: JSON.stringify({ reportId: report.id }),
       });
       const json = await res.json();
-      if (json.success) {
-        setEditedPlan(json.refreshed_plan);
+      const refreshed = json.success ? normalizeEditedPlan(json.refreshed_plan) : null;
+      if (refreshed) {
+        setEditedPlan(refreshed);
         toast({ title: 'Plan refreshed', description: 'Your 90-day plan has been updated based on your check-in patterns.' });
       } else {
         toast({ title: 'Refresh failed', description: json.error || 'Unable to refresh plan.', variant: 'destructive' });
@@ -317,14 +326,15 @@ const Report = () => {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
         body: JSON.stringify({}),
       });
-      const json = await res.json();
+      const json = usablePatternIntel(res.ok, await res.json().catch(() => null));
+      if (!json) throw new Error("Pattern analysis unavailable");
       setPatternIntel(json);
       setPatternIntelLoaded(true);
-      // Persist to DB so subsequent visits skip the AI call.
-      if (report && !json?.insufficient_data) {
+      // Persist only real results so an error body is never cached as analysis.
+      if (report && !json.insufficient_data) {
         await supabase
           .from('strategic_reports')
-          .update({ pattern_intelligence: json })
+          .update({ pattern_intelligence: json as Json })
           .eq('id', report.id);
       }
     } catch (e) {
@@ -338,7 +348,7 @@ const Report = () => {
   // trigger generation once when the user has at least 2 audits.
   useEffect(() => {
     if (!user || !report) return;
-    const cached = (report as unknown as { pattern_intelligence?: unknown }).pattern_intelligence;
+    const cached = usablePatternIntel(true, (report as unknown as { pattern_intelligence?: unknown }).pattern_intelligence);
     if (cached && !patternIntelLoaded) {
       setPatternIntel(cached);
       setPatternIntelLoaded(true);
@@ -409,7 +419,9 @@ const Report = () => {
     );
   }
 
-  const { pattern_analysis, contradictions, forced_choice, north_star_focus, ninety_day_plan, intent_model } = report;
+  const { forced_choice, north_star_focus, intent_model } = report;
+  const pattern_analysis = normalizePatternAnalysis(report.pattern_analysis);
+  const contradictions = normalizeContradictions(report.contradictions);
   const isPremiumTier = planTier === "premium" || planTier === "coach";
 
   return (
@@ -456,7 +468,7 @@ const Report = () => {
           </div>
         </section>
 
-        {intent_model && (
+        {intent_model?.primary_lens && (
           <section className="mb-8 print:break-inside-avoid">
             <h2 className="font-heading text-xl font-bold text-foreground mb-4 flex items-center gap-2">
               <Layers className="h-5 w-5 text-primary" /> Adaptive Coaching Architecture
@@ -641,6 +653,8 @@ const Report = () => {
                               <button
                                 className="mt-0.5 shrink-0 print:hidden"
                                 onClick={() => toggleActionComplete(phaseIdx, actionIdx)}
+                                aria-label={isDone ? `Mark not done: ${a}` : `Mark done: ${a}`}
+                                aria-pressed={isDone}
                               >
                                 {isDone
                                   ? <CheckCircle2 className="h-4 w-4 text-primary" />
@@ -649,8 +663,9 @@ const Report = () => {
                               </button>
                               <span className={isDone ? 'line-through text-muted-foreground flex-1' : 'text-foreground flex-1'}>{a}</span>
                               <button
-                                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 print:hidden"
+                                className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity shrink-0 print:hidden"
                                 onClick={() => { setEditingAction({ phase: phaseIdx, action: actionIdx }); setEditActionText(a); }}
+                                aria-label={`Edit action: ${a}`}
                               >
                                 <Pencil className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
                               </button>

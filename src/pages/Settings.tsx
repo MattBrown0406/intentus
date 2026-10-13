@@ -91,6 +91,9 @@ const Settings = () => {
   const [cadence, setCadence] = useState<"daily" | "every_other_day" | "weekly">("daily");
   const [timezone, setTimezone] = useState("America/New_York");
   const [gender, setGender] = useState<Gender>("prefer_not_to_say");
+  // Cadence as last loaded/saved: the overdue reminder must not re-fire while
+  // the user is merely clicking through unsaved cadence options.
+  const [savedCadence, setSavedCadence] = useState<"daily" | "every_other_day" | "weekly">("daily");
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -112,6 +115,7 @@ const Settings = () => {
         setDisplayName(profile.display_name ?? "");
         setTone(profile.coaching_tone ?? "balanced");
         setCadence(profile.check_in_cadence ?? "daily");
+        setSavedCadence(profile.check_in_cadence ?? "daily");
         setTimezone(profile.timezone ?? "America/New_York");
         setGender(profile.gender ?? "prefer_not_to_say");
       }
@@ -138,7 +142,7 @@ const Settings = () => {
       const lastDate = new Date(lastCheckin.created_at);
       const now = new Date();
       const daysDiff = Math.floor((now.getTime() - lastDate.getTime()) / 86400000);
-      const threshold = cadence === 'weekly' ? 7 : cadence === 'every_other_day' ? 2 : 1;
+      const threshold = savedCadence === 'weekly' ? 7 : savedCadence === 'every_other_day' ? 2 : 1;
       if (daysDiff >= threshold) {
         toast({
           title: 'Check-in reminder',
@@ -148,7 +152,7 @@ const Settings = () => {
     };
     void checkReminder().catch(() => undefined);
     return () => { active = false; };
-  }, [user, loading, cadence, toast]);
+  }, [user, loading, hydrated, savedCadence, toast]);
 
   const handleSave = async () => {
     if (!user || hydrated !== user.id || saving || deleting) return;
@@ -172,6 +176,7 @@ const Settings = () => {
     if (error) {
       toast({ title: "Error saving settings", description: error.message, variant: "destructive" });
     } else {
+      setSavedCadence(cadence);
       toast({ title: "Settings saved", description: "Your profile has been updated." });
     }
     } catch (error) { if (owner.current === id) toast({ title: "Error saving settings", description: error instanceof Error ? error.message : "Please retry.", variant: "destructive" }); }
@@ -232,7 +237,7 @@ const Settings = () => {
       <nav className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
         <div className="container mx-auto flex items-center justify-between h-14 px-4">
           <div className="flex items-center gap-2 sm:gap-3">
-            <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")}>
+            <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")} aria-label="Back to dashboard">
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <div className="flex items-center gap-2">
@@ -242,7 +247,7 @@ const Settings = () => {
               </span>
             </div>
           </div>
-          <Button variant="hero" size="sm" onClick={handleSave} disabled={saving} className="px-3 text-xs sm:text-sm sm:px-4">
+          <Button variant="hero" size="sm" onClick={handleSave} disabled={saving} aria-label={saving ? "Saving changes" : "Save changes"} className="px-3 text-xs sm:text-sm sm:px-4">
             {saving ? (
               <>
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" /> <span className="hidden sm:inline">Saving…</span>

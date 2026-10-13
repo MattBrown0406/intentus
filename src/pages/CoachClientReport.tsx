@@ -93,17 +93,20 @@ const CoachClientReport = () => {
   const saveChanges = async () => {
     if (!report) return;
     setSaving(true);
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("strategic_reports")
       .update({
         north_star_focus: editNorthStar,
         forced_choice: editForcedChoice,
         ninety_day_plan: editPlan as any,
       })
-      .eq("id", report.id);
+      .eq("id", report.id)
+      .eq("user_id", clientId!)
+      .select("id");
 
-    if (error) {
-      toast({ title: "Error saving", description: error.message, variant: "destructive" });
+    // If the client revoked sharing or the link ended, RLS matches zero rows without an error.
+    if (error || !data?.length) {
+      toast({ title: "Error saving", description: error?.message || "You no longer have access to edit this client's plan.", variant: "destructive" });
     } else {
       setReport({
         ...report,

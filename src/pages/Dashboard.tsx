@@ -18,6 +18,7 @@ import {
   RefreshCw, ArrowUpRight, CheckCircle2, Menu as MenuIcon,
 } from "lucide-react";
 import { format, differenceInDays, formatDistanceToNow } from "date-fns";
+import { calculateDayStreak } from "@/lib/check-in-streak";
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatLensLabel, type IntentModel, type IntentProfile } from "@/lib/intentus-architecture";
 import {
@@ -199,12 +200,14 @@ const Dashboard = () => {
     const loadCoachNotes = async () => {
       if (!user) return;
       try {
-        const { data: clientLink } = await supabase
+        // A client may be linked to several coaches (unique per coach+client),
+        // so .maybeSingle() would error and hide every shared note.
+        const { data: clientLinks } = await supabase
           .from("coach_clients")
           .select("coach_user_id")
           .eq("client_user_id", user.id)
-          .maybeSingle();
-        if (!clientLink) return;
+          .limit(1);
+        if (!clientLinks?.length) return;
         const { data: notes } = await supabase
           .from("coach_annotations")
           .select("id, content, created_at")
@@ -221,7 +224,7 @@ const Dashboard = () => {
   }, [user, toast]);
 
   const handleSaveOneThing = async () => {
-    if (!user || !oneThingInput.trim()) return;
+    if (!user || !oneThingInput.trim() || oneThingSaving) return;
     setOneThingSaving(true);
     try {
       const saved = await setWeeklyCommitment(user.id, oneThingInput.trim());
@@ -230,6 +233,7 @@ const Dashboard = () => {
       setOneThingInput("");
     } catch (e) {
       console.error("Error saving one thing:", e);
+      toast({ title: "Not saved", description: "Your one thing wasn't saved. Please try again.", variant: "destructive" });
     }
     setOneThingSaving(false);
   };
@@ -242,7 +246,7 @@ const Dashboard = () => {
     );
   }
 
-  const streak = calculateStreak(checkIns);
+  const streak = calculateDayStreak(checkIns.map((c) => c.created_at));
   const moodSamples = checkIns.filter((c) => c.mood_score !== null);
   const energySamples = checkIns.filter((c) => c.energy_score !== null);
   const avgMood = moodSamples.length > 0
@@ -352,7 +356,7 @@ const Dashboard = () => {
                 <Shield className="h-4 w-4 mr-1" /> Admin
               </Button>
             )}
-            <Button variant="ghost" size="icon" onClick={() => { void signOut().catch(() => toast({ title: "Sign out failed", description: "You are still signed in. Please try again.", variant: "destructive" })); }}><LogOut className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" aria-label="Sign out" onClick={() => { void signOut().catch(() => toast({ title: "Sign out failed", description: "You are still signed in. Please try again.", variant: "destructive" })); }}><LogOut className="h-4 w-4" /></Button>
           </div>
 
           {/* Mobile nav */}
@@ -371,7 +375,7 @@ const Dashboard = () => {
             </Button>
             <Sheet>
               <SheetTrigger asChild>
-                <Button variant="ghost" size="icon">
+                <Button variant="ghost" size="icon" aria-label="Open menu">
                   <MenuIcon className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
@@ -742,19 +746,20 @@ const Dashboard = () => {
                 </div>
                 <div className="space-y-2">
                   {nextActions.slice(0, 3).map((item) => (
-                    <div
+                    <button
+                      type="button"
                       key={item}
-                      className="flex items-center justify-between rounded-xl border border-border/60 bg-background/80 px-3 py-2.5 text-sm cursor-pointer hover:border-primary/30 transition-colors"
+                      className="flex w-full items-center justify-between rounded-xl border border-border/60 bg-background/80 px-3 py-2.5 text-left text-sm cursor-pointer hover:border-primary/30 transition-colors"
                       onClick={() => {
                         if (item.includes("audit")) navigate("/audit");
                         else if (item.includes("report")) navigate("/report");
-                        else if (item.includes("check-in")) navigate("/check-in");
+                        else if (item.includes("check-in") || item.includes("commitments")) navigate("/check-in");
                         else if (item.includes("one thing")) setShowOneThingModal(true);
                       }}
                     >
                       <span className="text-foreground">{item}</span>
                       <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -852,18 +857,6 @@ const Dashboard = () => {
 
 function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function calculateStreak(checkIns: CheckIn[]): number {
-  if (checkIns.length === 0) return 0;
-  let streak = 1;
-  const sorted = [...checkIns].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  for (let i = 1; i < sorted.length; i++) {
-    const diff = differenceInDays(new Date(sorted[i - 1].created_at), new Date(sorted[i].created_at));
-    if (diff <= 1) streak++;
-    else break;
-  }
-  return streak;
 }
 
 export default Dashboard;
