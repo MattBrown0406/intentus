@@ -73,7 +73,7 @@ const plans: Plan[] = [
   },
 ];
 
-const APP_STORE_URL = "https://apps.apple.com/app/id6744403069";
+const APP_STORE_URL = "https://apps.apple.com/app/id6764695535";
 const coachPlan = plans.find((p) => p.tier === "coach")!;
 
 const Subscribe = () => {

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { APP_STORE_URL } from "@/lib/site";
 import { Button } from "@/components/ui/button";
 import { brandLogo as logo } from "@/lib/brand";
 import { Menu, X } from "lucide-react";
@@ -13,6 +14,7 @@ import {
 } from "@/components/ui/sheet";
 
 const navLinks = [
+  { label: "Demo", href: "/#demo", isAnchor: true },
   { label: "How it works", href: "/#how-it-works", isAnchor: true },
   { label: "For leaders", href: "/for-leaders", isAnchor: false },
   { label: "For coaches", href: "/for-coaches", isAnchor: false },
@@ -54,7 +56,7 @@ const Navbar = () => {
             <Link to="/auth">Log in</Link>
           </Button>
           <Button asChild variant="hero" size="sm">
-            <Link to="/auth">Start audit</Link>
+            <a href={APP_STORE_URL} target="_blank" rel="noopener noreferrer">Get the app</a>
           </Button>
         </div>
 
@@ -106,7 +108,7 @@ const Navbar = () => {
                 <div className="mt-auto border-t border-border px-4 py-4 space-y-2">
                   <SheetClose asChild>
                     <Button asChild variant="hero" className="w-full justify-center">
-                      <Link to="/auth">Start audit</Link>
+                      <a href={APP_STORE_URL} target="_blank" rel="noopener noreferrer">Get the app</a>
                     </Button>
                   </SheetClose>
                   <SheetClose asChild>
