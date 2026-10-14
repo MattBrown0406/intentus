@@ -18,7 +18,7 @@ function RotatingWord() {
     return () => clearInterval(t);
   }, [reduced]);
   return (
-    <span className="relative inline-grid overflow-hidden align-bottom">
+    <span className="relative inline-grid overflow-hidden whitespace-nowrap align-bottom">
       {/* invisible sizer keeps the line height/width stable */}
       <span className="invisible col-start-1 row-start-1">kept promise.</span>
       {ROTATING.map((w, n) => (
@@ -96,7 +96,7 @@ export function HomeHero() {
               </span>
               New: Intentus 3.0 for iPhone
             </div>
-            <h1 className="font-heading text-[2.6rem] font-bold leading-[1.05] tracking-tight text-foreground sm:text-6xl lg:text-7xl motion-safe:animate-fade-up" style={{ animationDelay: "0.08s" }}>
+            <h1 className="font-heading text-[2.4rem] font-bold leading-[1.05] tracking-tight text-foreground sm:text-6xl xl:text-7xl motion-safe:animate-fade-up" style={{ animationDelay: "0.08s" }}>
               Execution starts
               <br />
               with an <RotatingWord />
@@ -131,10 +131,10 @@ export function HomeHero() {
                 <TodayScreen play={!reduced} />
               </PhoneFrame>
             </div>
-            <div className="absolute -left-6 top-6 hidden scale-[0.9] sm:block lg:-left-44 motion-safe:animate-[float-slow_7s_ease-in-out_infinite]">
+            <div className="absolute -left-6 top-6 hidden scale-[0.9] sm:block lg:-left-12 xl:-left-44 motion-safe:animate-[float-slow_7s_ease-in-out_infinite]">
               <NotificationCard />
             </div>
-            <div className="absolute -right-4 bottom-10 hidden scale-[0.92] sm:block lg:-right-32 motion-safe:animate-[float-slow_8s_ease-in-out_1.2s_infinite]">
+            <div className="absolute -right-4 bottom-10 hidden scale-[0.92] sm:block lg:-right-6 xl:-right-32 motion-safe:animate-[float-slow_8s_ease-in-out_1.2s_infinite]">
               <WidgetCard />
             </div>
           </div>

@@ -36,7 +36,7 @@ const Navbar = () => {
         </Link>
 
         {/* Desktop nav */}
-        <div className="hidden items-end gap-6 md:flex pb-0.5">
+        <div className="hidden items-end gap-6 xl:flex pb-0.5">
           {navLinks.map((link) =>
             link.isAnchor ? (
               <a key={link.href} href={link.href} className="text-sm text-muted-foreground transition-colors hover:text-foreground">
@@ -51,7 +51,7 @@ const Navbar = () => {
         </div>
 
         {/* Desktop CTA */}
-        <div className="hidden items-end gap-3 pb-0.5 md:flex">
+        <div className="hidden items-end gap-3 pb-0.5 xl:flex">
           <Button asChild variant="ghost" size="sm">
             <Link to="/auth">Log in</Link>
           </Button>
@@ -61,7 +61,7 @@ const Navbar = () => {
         </div>
 
         {/* Mobile hamburger */}
-        <div className="flex items-center gap-2 md:hidden">
+        <div className="flex items-center gap-2 xl:hidden">
           <Button asChild variant="ghost" size="sm" className="px-3 text-xs">
             <Link to="/auth">Log in</Link>
           </Button>
